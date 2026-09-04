@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sync2act"
+version = "0.1.0"
+description = "Study how robot demonstration data quality affects imitation learning."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = {text = "MIT"}
+authors = [{name = "Sync2Act contributors"}]
+dependencies = [
+  "numpy>=1.26,<3",
+  "pandas>=2.1,<4",
+  "Pillow>=10,<13",
+  "PyYAML>=6,<7",
+  "torch>=2.6,<3",
+  "PySide6>=6.7,<7",
+  "pyqtgraph>=0.13.7,<1",
+  "huggingface_hub>=0.34,<2",
+  "pyarrow>=20,<26",
+  "av>=14,<19",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "ruff>=0.9,<1"]
+lerobot = ["lerobot>=0.4,<1"]
+
+[project.scripts]
+sync2act = "sync2act.cli:main"
+sync2act-gui = "sync2act.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

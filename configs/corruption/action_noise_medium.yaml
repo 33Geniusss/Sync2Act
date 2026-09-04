@@ -1,0 +1,4 @@
+type: action_noise
+mode: gaussian
+sigma: 0.15
+seed: 7

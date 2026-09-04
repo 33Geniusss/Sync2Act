@@ -1,0 +1,16 @@
+model:
+  name: quality_act
+  state_dim: 6
+  action_dim: 3
+  horizon: 16
+  hidden_dim: 96
+  num_layers: 2
+  num_heads: 4
+  use_quality_features: true
+dataset:
+  num_episodes: 4
+  length: 48
+  seed: 7
+evaluation:
+  device: cpu
+  scope: offline-only

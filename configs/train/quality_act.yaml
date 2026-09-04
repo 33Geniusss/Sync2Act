@@ -1,0 +1,29 @@
+model:
+  name: quality_act
+  state_dim: 6
+  action_dim: 3
+  horizon: 16
+  hidden_dim: 96
+  num_layers: 2
+  num_heads: 4
+  use_quality_features: true
+dataset:
+  num_episodes: 4
+  length: 48
+  seed: 7
+corruption:
+  type: frame_drop
+  probability: 0.10
+  replacement: previous
+  seed: 7
+training:
+  device: cpu
+  horizon: 16
+  epochs: 5
+  batch_size: 16
+  learning_rate: 0.001
+  validation_split: 0.15
+  loss: smooth_l1
+  quality_weighted_loss: true
+  lambda_smooth: 0.01
+  seed: 7

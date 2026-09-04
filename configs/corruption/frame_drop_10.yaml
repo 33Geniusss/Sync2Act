@@ -1,0 +1,4 @@
+type: frame_drop
+probability: 0.10
+replacement: previous
+seed: 7

@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# Windows command files require CRLF when executed by cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets and generated artifacts must never be line-normalized.
+*.png binary -eol
+*.jpg binary -eol
+*.jpeg binary -eol
+*.gif binary -eol
+*.ico binary -eol
+*.zip binary -eol
+*.pt binary -eol
+*.pth binary -eol
+*.parquet binary -eol
+*.mp4 binary -eol

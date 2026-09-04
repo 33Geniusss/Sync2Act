@@ -1,0 +1,18 @@
+model:
+  name: bc_mlp
+  state_dim: 6
+  action_dim: 3
+  input_mode: state_only
+  hidden_dim: 128
+dataset:
+  num_episodes: 4
+  length: 48
+  seed: 7
+training:
+  device: cpu
+  epochs: 5
+  batch_size: 32
+  learning_rate: 0.003
+  validation_split: 0.15
+  loss: mse
+  seed: 7

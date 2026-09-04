@@ -1,0 +1,31 @@
+models: [bc_mlp, act_lite, quality_act]
+seeds: [7, 17, 27]
+model_defaults:
+  state_dim: 6
+  action_dim: 3
+  horizon: 16
+  hidden_dim: 96
+  num_layers: 2
+  num_heads: 4
+dataset:
+  num_episodes: 4
+  length: 48
+training:
+  device: cpu
+  horizon: 16
+  epochs: 10
+  batch_size: 16
+  learning_rate: 0.001
+  quality_weighted_loss: true
+  lambda_smooth: 0.01
+corruptions:
+  - {name: clean}
+  - {name: shift_1, type: temporal_shift, target: image, shift: 1, boundary: mask}
+  - {name: shift_2, type: temporal_shift, target: image, shift: 2, boundary: mask}
+  - {name: shift_4, type: temporal_shift, target: image, shift: 4, boundary: mask}
+  - {name: drop_05, type: frame_drop, probability: 0.05, replacement: previous}
+  - {name: drop_10, type: frame_drop, probability: 0.10, replacement: previous}
+  - {name: drop_20, type: frame_drop, probability: 0.20, replacement: previous}
+  - {name: noise_low, type: action_noise, mode: gaussian, sigma: 0.05}
+  - {name: noise_medium, type: action_noise, mode: gaussian, sigma: 0.15}
+  - {name: noise_high, type: action_noise, mode: gaussian, sigma: 0.30}

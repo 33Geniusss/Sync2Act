@@ -1,0 +1,12 @@
+model:
+  name: bc_mlp
+  state_dim: 6
+  action_dim: 3
+  input_mode: state_only
+dataset:
+  num_episodes: 4
+  length: 48
+  seed: 17
+evaluation:
+  device: cpu
+  scope: offline-only

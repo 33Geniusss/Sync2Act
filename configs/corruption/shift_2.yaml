@@ -1,0 +1,5 @@
+type: temporal_shift
+target: image
+shift: 2
+boundary: mask
+seed: 7
