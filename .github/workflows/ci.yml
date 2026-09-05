@@ -1,7 +1,12 @@
 name: CI
+
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,10 +17,17 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       SYNC2ACT_RUN_GUI_TESTS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+
+      - name: Install Linux Qt runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1
+
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+
       - run: pip install -e .[dev]
       - run: ruff check src tests
       - run: pytest
