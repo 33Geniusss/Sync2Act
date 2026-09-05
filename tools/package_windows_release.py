@@ -79,7 +79,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("release/Sync2Act-Windows-x64-v1.0.0.zip"),
+        default=Path("release/Sync2Act-Windows-x64-v1.1.0.zip"),
     )
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
