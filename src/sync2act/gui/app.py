@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from PySide6.QtCore import QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QApplication,
     QComboBox,
     QDoubleSpinBox,
@@ -41,6 +43,7 @@ from sync2act.corruptions import apply_corruption
 from sync2act.data.dataset import NormalizationStats
 from sync2act.data.split import split_episode_indices
 from sync2act.evaluation import evaluate_policy
+from sync2act.paths import default_dataset_path, models_root, new_model_checkpoint_path
 from sync2act.policies import build_policy
 from sync2act.reporting import generate_report
 from sync2act.training import load_checkpoint
@@ -88,6 +91,9 @@ def _asset_path(name: str) -> Path:
 
 
 def _image_pixmap(tensor: torch.Tensor, width: int = 250) -> QPixmap:
+    if tensor.ndim == 4:
+        # Display all synchronized camera views side by side in the inspector.
+        tensor = torch.cat(list(tensor), dim=2)
     if tensor.dtype == torch.uint8:
         tensor = tensor.float().div(255.0)
     array = np.ascontiguousarray(
@@ -222,6 +228,7 @@ class MainWindow(QMainWindow):
         self.validation_episodes = []
         self.test_episodes = []
         self.model_test_episodes = []
+        self._download_target_is_default = True
         shell = QWidget()
         shell.setObjectName("appShell")
         shell_layout = QVBoxLayout(shell)
@@ -238,6 +245,7 @@ class MainWindow(QMainWindow):
         self._build_training()
         self._build_evaluation()
         self._build_report()
+        self._configure_spin_boxes()
         self._apply_plot_theme()
         self.setStyleSheet("""
             * { font-size:13px; color:#26324a; }
@@ -269,9 +277,28 @@ class MainWindow(QMainWindow):
                 color:#53627c; background:#ffffff; }
             QGroupBox#metricCard { border-top:3px solid #6b87ff; padding:14px 16px; }
             QLabel#overviewValue { font-size:22px; font-weight:800; color:#3157d5; }
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit { background:#fbfcff;
+            QLineEdit, QComboBox, QTextEdit { background:#fbfcff;
                 border:1px solid #d7dfec; border-radius:7px; padding:6px 8px;
                 selection-background-color:#5b7cff; }
+            QSpinBox, QDoubleSpinBox { background:#fbfcff; border:1px solid #d7dfec;
+                border-radius:7px; padding:5px 32px 5px 8px;
+                selection-background-color:#5b7cff; }
+            QSpinBox::up-button, QDoubleSpinBox::up-button {
+                subcontrol-origin:border; subcontrol-position:top right; width:28px;
+                background:#edf2fa; border-left:1px solid #d2dbea;
+                border-bottom:1px solid #d2dbea; border-top-right-radius:6px; }
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                subcontrol-origin:border; subcontrol-position:bottom right; width:28px;
+                background:#edf2fa; border-left:1px solid #d2dbea;
+                border-bottom-right-radius:6px; }
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+                background:#dfe7fb; }
+            QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+            QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+                background:#cbd8f8; }
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow,
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { width:9px; height:9px; }
             QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover,
             QTextEdit:hover { border-color:#a9b8d4; }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
@@ -308,6 +335,12 @@ class MainWindow(QMainWindow):
         """)
         self.statusBar().showMessage("No dataset loaded")
         self.refresh_all()
+
+    def _configure_spin_boxes(self):
+        for spin_box in self.findChildren(QAbstractSpinBox):
+            spin_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+            spin_box.setAccelerated(True)
+            spin_box.setMinimumHeight(36)
 
     def _build_app_header(self):
         header = QFrame()
@@ -411,7 +444,9 @@ class MainWindow(QMainWindow):
         self.hf_repo_id = QLineEdit()
         self.hf_repo_id.setPlaceholderText("owner/dataset (for example: lerobot/pusht)")
         self.hf_revision = QLineEdit("main")
-        self.hf_target = QLineEdit(str(Path.home() / "Sync2Act" / "datasets"))
+        self.hf_target = QLineEdit(str(default_dataset_path("")))
+        self.hf_repo_id.textChanged.connect(self._update_default_download_target)
+        self.hf_target.textEdited.connect(self._mark_download_target_custom)
         browse = QPushButton("Browse...")
         browse.setProperty("variant", "secondary")
         browse.clicked.connect(self.choose_download_target)
@@ -655,6 +690,19 @@ class MainWindow(QMainWindow):
         self.seed_spin.valueChanged.connect(self._on_split_settings_changed)
         self.split_summary_label = QLabel("No dataset loaded")
         self.split_summary_label.setStyleSheet("color:#536079;font-weight:600")
+        self.training_step_estimate_label = QLabel(
+            "Estimated optimizer steps: load a dataset first"
+        )
+        self.training_step_estimate_label.setObjectName("trainingStepEstimate")
+        self.training_step_estimate_label.setStyleSheet(
+            "color:#3157d5;background:#eef2ff;border:1px solid #d7e0ff;"
+            "border-radius:7px;padding:8px 10px;font-weight:650"
+        )
+        self.training_step_estimate_label.setToolTip(
+            "Optimizer steps only. Validation batches do not update the model and are not included."
+        )
+        self.epochs_spin.valueChanged.connect(self._update_training_step_estimate)
+        self.batch_size_spin.valueChanged.connect(self._update_training_step_estimate)
 
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Pause / Stop")
@@ -673,6 +721,7 @@ class MainWindow(QMainWindow):
         buttons.addStretch()
         layout.addWidget(parameter_box)
         layout.addWidget(self.split_summary_label)
+        layout.addWidget(self.training_step_estimate_label)
         layout.addLayout(buttons)
         self.train_progress = QProgressBar()
         layout.addWidget(self.train_progress)
@@ -751,6 +800,7 @@ class MainWindow(QMainWindow):
             self.state_change_table.setRowCount(0)
             self.corruption_info.setPlainText("No dataset loaded.")
             self.split_summary_label.setText("No dataset loaded")
+            self._update_training_step_estimate()
             self.start_button.setEnabled(False)
             return
         episode = self.episodes[0]
@@ -760,9 +810,13 @@ class MainWindow(QMainWindow):
         self.overview_values["frames"].setText(
             str(sum(len(item["timestamp"]) for item in self.episodes))
         )
-        self.overview_values["shape"].setText(
-            " × ".join(map(str, episode["observation.image"].shape[1:]))
+        image_shape = episode["observation.image"].shape
+        shape_text = (
+            f"{image_shape[1]} cameras · " + " × ".join(map(str, image_shape[2:])) + " each"
+            if len(image_shape) == 5
+            else "1 camera · " + " × ".join(map(str, image_shape[1:]))
         )
+        self.overview_values["shape"].setText(shape_text)
         self.overview_values["device"].setText("CUDA" if torch.cuda.is_available() else "CPU")
         self.overview_values["status"].setText("Ready")
         self.overview_values["best"].setText(
@@ -774,22 +828,32 @@ class MainWindow(QMainWindow):
         self.refresh_inspector()
         self.preview_corruption()
 
+    def _update_default_download_target(self, repo_id: str):
+        if self._download_target_is_default:
+            self.hf_target.setText(str(default_dataset_path(repo_id)))
+
+    def _mark_download_target_custom(self, _text: str):
+        self._download_target_is_default = False
+
     def choose_download_target(self):
         initial = str(Path(self.hf_target.text() or ".").expanduser().resolve())
         path = QFileDialog.getExistingDirectory(self, "Choose dataset target folder", initial)
         if path:
+            self._download_target_is_default = False
             self.hf_target.setText(path)
 
     def start_dataset_download(self):
         if self.download_thread and self.download_thread.isRunning():
             return
         repo_id = self.hf_repo_id.text().strip()
-        target = self.hf_target.text().strip()
         if not repo_id or "/" not in repo_id:
             QMessageBox.information(
                 self, "Repository ID required", "Enter a repository ID such as owner/dataset."
             )
             return
+        if self._download_target_is_default:
+            self.hf_target.setText(str(default_dataset_path(repo_id)))
+        target = self.hf_target.text().strip()
         if not target:
             QMessageBox.information(self, "Target required", "Choose a target folder.")
             return
@@ -903,7 +967,8 @@ class MainWindow(QMainWindow):
         self.cancel_download_button.setEnabled(False)
         self.download_progress.setValue(100)
         self.download_status.setText(
-            f"Loaded {metadata['episodes']} episodes / {metadata['frames']} frames"
+            f"Loaded {metadata['episodes']} episodes / {metadata['frames']} frames / "
+            f"{metadata.get('camera_count', 1)} cameras"
         )
         self.statusBar().showMessage(f"LeRobot dataset loaded from {metadata['root']}")
         self.refresh_all()
@@ -963,6 +1028,25 @@ class MainWindow(QMainWindow):
             f" · validation {len(self.validation_episodes)} (clean)"
             f" · test {len(self.test_episodes)} (clean)"
         )
+        self._update_training_step_estimate()
+
+    def _update_training_step_estimate(self, *_args):
+        if not self.original_episodes or not self.training_episodes:
+            self.training_step_estimate_label.setText(
+                "Estimated optimizer steps: load a dataset first"
+            )
+            return
+        dataset_frames = sum(len(episode["timestamp"]) for episode in self.original_episodes)
+        training_frames = sum(len(episode["timestamp"]) for episode in self.training_episodes)
+        batch_size = self.batch_size_spin.value()
+        epochs = self.epochs_spin.value()
+        steps_per_epoch = math.ceil(training_frames / batch_size)
+        total_steps = epochs * steps_per_epoch
+        self.training_step_estimate_label.setText(
+            f"Estimated optimizer steps: {total_steps:,} = {epochs} epoch(s) × "
+            f"ceil({training_frames:,} training frames / batch {batch_size:,}) "
+            f"· {steps_per_epoch:,} steps/epoch · {dataset_frames:,} total dataset frames"
+        )
 
     def _on_split_settings_changed(self, *_args):
         if not self.original_episodes:
@@ -1010,6 +1094,7 @@ class MainWindow(QMainWindow):
         self.inspector_detail.setText(
             f"partition={partition}  quality={float(current['quality_score'][step]):.2f}  "
             f"missing={bool(current['missing_mask'][step])}  "
+            f"cameras={1 if current['observation.image'].ndim == 4 else current['observation.image'].shape[1]}  "
             f"state={current['observation.state'][step].numpy().round(3)}"
         )
         self.signal_plot.clear()
@@ -1288,6 +1373,7 @@ class MainWindow(QMainWindow):
             "name": name,
             "state_dim": state_dim,
             "action_dim": action_dim,
+            "input_mode": "image_state",
             "horizon": horizon,
             "hidden_dim": 64,
             "num_layers": 1,
@@ -1331,8 +1417,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Invalid episode split", str(exc))
             return
         model_config, training_config = self._training_configs()
-        output = Path("runs/gui")
         resume_path = self.last_checkpoint if resume else None
+        if resume_path is not None:
+            output = resume_path.parent
+            training_config["checkpoint_name"] = resume_path.name
+        else:
+            data_condition = (self.active_corruption_config or {"type": "clean"}).get(
+                "type", "clean"
+            )
+            checkpoint = new_model_checkpoint_path(model_config["name"], data_condition)
+            output = checkpoint.parent
+            training_config["checkpoint_name"] = checkpoint.name
         self.thread = QThread(self)
         self.worker = TrainingWorker(
             self.training_episodes,
@@ -1352,10 +1447,18 @@ class MainWindow(QMainWindow):
         self.worker.failed.connect(self.thread.quit)
         self.training_requested.connect(self.worker.stop)
         self._losses = []
+        self.training_status.setPlainText(
+            f"Checkpoint will be saved to {output / training_config['checkpoint_name']}"
+        )
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.resume_button.setEnabled(False)
-        self.train_progress.setRange(0, self.epochs_spin.value())
+        training_frames = sum(len(episode["timestamp"]) for episode in self.training_episodes)
+        estimated_steps = self.epochs_spin.value() * math.ceil(
+            training_frames / self.batch_size_spin.value()
+        )
+        self.train_progress.setRange(0, estimated_steps)
+        self.train_progress.setValue(0)
         self.overview_values["status"].setText("Training")
         self.thread.start()
 
@@ -1368,11 +1471,12 @@ class MainWindow(QMainWindow):
 
     def on_training_progress(self, event):
         if event.get("epoch_complete"):
-            self.train_progress.setValue(int(event["epoch"]) + 1)
+            self.train_progress.setValue(int(event["step"]))
             self.training_status.append(
                 f"Epoch {event['epoch'] + 1}: train={event['train_loss']:.5f}, val={event['validation_loss']:.5f}"
             )
         elif "train_loss" in event:
+            self.train_progress.setValue(int(event["step"]))
             self._losses.append(event["train_loss"])
             self.training_curve.setData(self._losses)
             self.training_status.setPlainText(
@@ -1400,7 +1504,7 @@ class MainWindow(QMainWindow):
 
     def choose_checkpoint(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Choose checkpoint", "runs", "PyTorch checkpoint (*.pt)"
+            self, "Choose checkpoint", str(models_root()), "PyTorch checkpoint (*.pt)"
         )
         if not paths:
             return

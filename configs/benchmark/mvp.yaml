@@ -3,6 +3,7 @@ seeds: [7, 17, 27]
 model_defaults:
   state_dim: 6
   action_dim: 3
+  input_mode: image_state
   horizon: 16
   hidden_dim: 96
   num_layers: 2

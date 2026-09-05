@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -9,7 +10,12 @@ pytestmark = pytest.mark.skipif(
     reason="Qt event-loop tests require an interactive or CI-supported desktop",
 )
 
-from PySide6.QtWidgets import QWidget  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QStyle,
+    QStyleOptionSpinBox,
+    QWidget,
+)
 
 from sync2act.data.episode import clone_episode  # noqa: E402
 from sync2act.data.synthetic import generate_demo_episodes  # noqa: E402
@@ -39,6 +45,50 @@ def test_main_window_starts_without_demo_data(qtbot):
     assert window.seed_spin.value() == 7
     assert window.grad_clip_spin.value() == 0.0
     assert window.metrics_table.columnWidth(0) >= 280
+    expected_root = Path.home() / "Sync2Act" / "datasets"
+    assert Path(window.hf_target.text()) == expected_root
+    window.hf_repo_id.setText("lerobot/pusht")
+    assert Path(window.hf_target.text()) == expected_root / "pusht"
+    window.close()
+
+
+def test_spin_box_arrow_hit_areas_are_large_and_clickable(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    spin_box = window.epochs_spin
+    option = QStyleOptionSpinBox()
+    spin_box.initStyleOption(option)
+    up = spin_box.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        option,
+        QStyle.SubControl.SC_SpinBoxUp,
+        spin_box,
+    )
+    down = spin_box.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        option,
+        QStyle.SubControl.SC_SpinBoxDown,
+        spin_box,
+    )
+    assert up.width() >= 28
+    assert down.width() >= 28
+    assert up.height() >= 16
+    assert down.height() >= 16
+
+    initial = spin_box.value()
+    qtbot.mouseClick(
+        spin_box,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(up.left() + 3, up.top() + 3),
+    )
+    assert spin_box.value() == initial + spin_box.singleStep()
+    qtbot.mouseClick(
+        spin_box,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(down.right() - 3, down.bottom() - 3),
+    )
+    assert spin_box.value() == initial
     window.close()
 
 
@@ -58,6 +108,14 @@ def test_training_controls_feed_the_training_configuration(qtbot):
     window.loss_combo.setCurrentText("smooth_l1")
     window.seed_spin.setValue(42)
     window.grad_clip_spin.setValue(1.0)
+    training_frames = sum(len(episode["timestamp"]) for episode in window.training_episodes)
+    dataset_frames = sum(len(episode["timestamp"]) for episode in window.original_episodes)
+    expected_steps_per_epoch = int(np.ceil(training_frames / 12))
+    expected_steps = 9 * expected_steps_per_epoch
+    estimate = window.training_step_estimate_label.text()
+    assert f"Estimated optimizer steps: {expected_steps:,}" in estimate
+    assert f"ceil({training_frames:,} training frames / batch 12)" in estimate
+    assert f"{dataset_frames:,} total dataset frames" in estimate
     _, config = window._training_configs()
     assert config == {
         **config,
@@ -243,7 +301,9 @@ def test_corruption_targets_and_plot_visibility_follow_type(qtbot):
     window.close()
 
 
-def test_background_training_keeps_event_loop_responsive(qtbot):
+def test_background_training_keeps_event_loop_responsive(qtbot, tmp_path, monkeypatch):
+    checkpoint = tmp_path / "bc_mlp_clean_test.pt"
+    monkeypatch.setattr("sync2act.gui.app.new_model_checkpoint_path", lambda *_: checkpoint)
     window = MainWindow()
     qtbot.addWidget(window)
     window.original_episodes = generate_demo_episodes()

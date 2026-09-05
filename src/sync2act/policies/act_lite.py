@@ -50,7 +50,9 @@ class ACTLite(nn.Module):
         del quality, missing, time_offset
         if state.ndim != 2 or state.shape[1] != self.state_dim:
             raise ValueError(f"state must have shape [B, {self.state_dim}]")
-        return torch.stack([self.image_encoder(image), self.state_encoder(state)], dim=1)
+        camera_tokens = self.image_encoder.encode_views(image)
+        state_token = self.state_encoder(state).unsqueeze(1)
+        return torch.cat([camera_tokens, state_token], dim=1)
 
     def forward(
         self,

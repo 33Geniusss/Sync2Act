@@ -19,10 +19,21 @@ class ImageEncoder(nn.Module):
             nn.Linear(32, output_dim),
         )
 
+    def encode_views(self, image: torch.Tensor) -> torch.Tensor:
+        """Encode every camera with shared weights and retain the camera axis."""
+        if image.ndim == 4 and image.shape[1] == 3:
+            image = image.unsqueeze(1)
+        if image.ndim != 5 or image.shape[1] == 0 or image.shape[2] != 3:
+            raise ValueError(
+                "image must have shape [B, 3, H, W] or [B, cameras, 3, H, W]"
+            )
+        batch, cameras, channels, height, width = image.shape
+        encoded = self.network(image.reshape(batch * cameras, channels, height, width))
+        return encoded.reshape(batch, cameras, -1)
+
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        if image.ndim != 4 or image.shape[1] != 3:
-            raise ValueError("image must have shape [B, 3, H, W]")
-        return self.network(image)
+        # BC-MLP needs one fixed-size vector, so fuse all camera embeddings by their mean.
+        return self.encode_views(image).mean(dim=1)
 
 
 def sinusoidal_positions(length: int, dimension: int, device: torch.device) -> torch.Tensor:

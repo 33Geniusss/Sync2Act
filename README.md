@@ -1,18 +1,34 @@
 # Sync2Act
 
+[![CI](https://github.com/33Geniusss/Sync2Act/actions/workflows/ci.yml/badge.svg)](https://github.com/33Geniusss/Sync2Act/actions/workflows/ci.yml)
+[![Python 3.11-3.13](https://img.shields.io/badge/python-3.11--3.13-3776AB.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **A PyTorch + native desktop lab for measuring how robot demonstration quality changes imitation-learning behavior.**
 
-Sync2Act turns a clean, episode-based robot dataset into controlled, reproducible experiments: corrupt the observations or actions, train one of three policies, measure offline behavior, compare trajectories, and export an evidence-bearing report. It ships with deterministic synthetic demonstrations, so the complete workflow works on CPU without a simulator or a download.
+Sync2Act turns an episode-based robot dataset into controlled, reproducible experiments: import data, damage selected training episodes, train one of three imitation-learning policies, compare offline predictions, and export an evidence-bearing report. The desktop application starts empty and does not bundle a dataset, trained checkpoint, or benchmark result.
 
-## Try it in three commands
+![Sync2Act Overview](assets/gui-overview.png)
+
+## Research workflow
+
+```text
+Original episodes
+├─ Training episodes   → clean or deliberately corrupted
+├─ Validation episodes → always clean
+└─ Test episodes       → always clean
+```
+
+The split is episode-level, preventing frames from one trajectory from leaking across partitions. Corruptions are applied only to the training partition. Normalization statistics come from that partition, while model comparison uses the held-out clean test episodes.
+
+## Quick start from source
 
 ```bash
 python -m pip install -e .[dev]
-sync2act demo
 sync2act-gui
 ```
 
-Python 3.11–3.13 is supported. The default demo uses CPU, trains a tiny BC-MLP, writes a checkpoint and per-episode predictions, evaluates it offline, and creates `runs/demo/report.html`.
+Python 3.11–3.13 is supported. Import or download a dataset from **Overview** before opening the training workflow. A deterministic synthetic-data command remains available for development and automated tests through `sync2act demo`, but it is not loaded by the GUI.
 
 ## What is implemented
 
@@ -24,19 +40,29 @@ Python 3.11–3.13 is supported. The default demo uses CPU, trains a tiny BC-MLP
 
 ACT-Lite is **not** a full reproduction of ACT: it intentionally omits the original CVAE latent-variable path. Quality-Aware ACT subclasses and reuses ACT-Lite rather than maintaining a copied model.
 
+All three policies are implemented in this repository and trained from scratch on the selected dataset; they are not fine-tuned third-party checkpoints.
+
 Data quality matters because behavior cloning assumes observations and labels describe the same moment and valid sensor state. A shifted image, repeated frame, delayed action, or stuck joint can turn a valid demonstration into a contradictory training target. Sync2Act records exactly what changed and makes that assumption testable.
 
 ## Desktop application
 
 Launch with `sync2act-gui` or `python -m sync2act.gui`. The PySide6 window starts with no dataset loaded, preventing accidental training on demonstration data, and provides:
 
-- **Overview:** empty-until-imported episode/frame/shape/device summary, background Hugging Face downloads, and local LeRobot v3 loading with target-folder selection and progress.
+- **Overview:** empty-until-imported episode/frame/shape/device summary, background Hugging Face downloads, and local LeRobot v3 loading with progress. Downloads default to `<user-home>/Sync2Act/datasets/<repository-name>` while still allowing a custom target. Hub transfer metadata is kept separately under `<user-home>/Sync2Act/.cache/huggingface`, so dataset folders contain only repository files and deeply nested camera paths do not inherit long temporary filenames.
 - **Dataset Inspector:** RGB preview, episode/step totals, one shared state/action dimension selector, a separate quality plot, time-labelled axes, selected-step cursors, and original-versus-working-copy comparison.
 - **Corruption Studio:** type-aware target controls, deterministic-seed disabling, a live three-stream alignment diagram for temporal shifts, a dropped-frame timeline, and before/after action or state curves with exact frame-level original/new/delta values.
-- **Corruption Studio:** seeded shift, drop, noise, and anomaly controls with live provenance preview, Apply, Reset, and YAML export.
-- **Training Monitor:** BC-MLP, ACT-Lite, or Quality-Aware ACT in a `QThread`; editable device, epoch, batch, optimizer, split, loss, seed, and gradient-clipping settings; recommended-value hints; live loss/LR/ETA; safe stop, checkpoint, and resume.
-- **Evaluation & Compare:** offline metrics, checkpoint loading, and target/prediction trajectories. Rollout fields are visibly `not run`.
+- **Training Monitor:** BC-MLP, ACT-Lite, or Quality-Aware ACT in a background worker; editable device, epochs, batch size, learning rate, weight decay, validation split, loss, seed, and gradient clipping; recommended-value hints; estimated optimizer steps; live loss/LR/ETA; safe stop, checkpoint, and resume. New checkpoints are automatically named `<model>_<data-condition>_<timestamp>.pt` under `<application-folder>/models`.
+- **Evaluation & Compare:** checkpoint loading, offline metrics, per-episode results, and target/prediction trajectories.
 - **Report:** HTML and JSON export containing configuration, seeds, dependency versions, timestamp, and Git commit when available.
+
+The Training Monitor estimates work before launch as:
+
+```text
+steps_per_epoch = ceil(training_frames / batch_size)
+total_steps     = epochs × steps_per_epoch
+```
+
+Validation batches are not included in this optimizer-step estimate.
 
 The optional local Windows bundle can be rebuilt with:
 
@@ -45,6 +71,8 @@ python -m pip install pyinstaller
 python -m PyInstaller --noconfirm Sync2Act.spec
 dist\Sync2Act\Sync2Act.exe
 ```
+
+At runtime, the packaged CUDA build uses an available NVIDIA GPU when compatible CUDA drivers are present; otherwise the application reports CPU. Prebuilt archives, when published, belong on the repository's [Releases page](https://github.com/33Geniusss/Sync2Act/releases), not in Git history.
 
 ## Architecture
 
@@ -100,29 +128,42 @@ Every corruption clones its input, accepts a seed, updates `quality_score` and/o
 - Gaussian/spike action noise and fixed/random action delay;
 - state spike, short missing span, stuck dimension, and timestamp jitter.
 
-## Results: measured versus pending
+## Offline evaluation
 
-The bundled smoke experiment is deliberately tiny and is a pipeline check, not a benchmark. The following values came from an actual CPU run on 2026-09-02 with the committed demo configuration:
+Evaluation is performed on held-out samples with ground-truth actions. Sync2Act reports `action_mse`, `action_mae`, trajectory smoothness, jerk, P50/P95 inference latency, parameter count, and per-episode metrics. Smoothness and jerk are calculated inside each episode and then aggregated, so the final frame of one episode is never connected to the first frame of another.
 
-| Run | Scope | Steps | Action MSE | Action MAE | Parameters | Training time |
-|---|---|---:|---:|---:|---:|---:|
-| bundled BC-MLP demo, seed 7 | offline-only | 6 | 0.246560 | 0.400231 | 17,859 | 0.061 s |
-| ACT-Lite formal matrix | not run | not run | not run | not run | not run | not run |
-| Quality-Aware ACT, 10% frame-drop smoke | offline-only | 55 | 0.277829 | 0.426424 | 245,091 | not persisted |
-| Quality-Aware ACT formal matrix | not run | not run | not run | not run | not run | not run |
-| Closed-loop PushT/robot rollout | not run | not run | not run | not run | not run | not run |
+These are offline imitation metrics, not closed-loop robot success rates. The repository intentionally contains no precomputed benchmark results or trained models; reported numbers should come from the user's own dataset, split, seed, and hardware.
 
-Latency from that same small run was P50 `0.0149 ms/sample` and P95 `0.0254 ms/sample`; treat these as environment-specific smoke measurements. No success rate, return, video, or formal robustness claim is inferred from them.
+## Dataset download and storage
 
-## Bring your own data
+The Overview tab can download a public or locally authenticated private Hugging Face dataset repository. The target is selectable, download progress is shown, and the default paths are:
 
-The Overview tab can download a public or locally authenticated private Hugging Face dataset repository into any selected folder. Progress is reported by completed files, and Hugging Face's local metadata allows interrupted/repeated downloads to reuse completed files. For a LeRobot v3 repository, select its root folder and click **Load local dataset**. Sync2Act reads the metadata and parquet rows, decodes the selected RGB video feature, splits frames by `episode_index`, initializes clean quality metadata, and derives the model state/action dimensions automatically.
+```text
+C:\Users\<username>\Sync2Act\datasets\<repository-name>
+C:\Users\<username>\Sync2Act\.cache\huggingface
+```
 
-Convert each episode to the public dictionary contract below and pass a list of episodes to `EpisodeWindowDataset` or the training functions:
+The second directory contains resumable Hugging Face transfer metadata. It is deliberately separated from the dataset directory to avoid Windows path-length failures. Dataset folders, caches, checkpoints, generated runs, and release archives are excluded from Git.
+
+## Local LeRobot datasets
+
+For a LeRobot v3 repository, select its root folder and click **Load local dataset**. A typical supported layout contains:
+
+```text
+meta/info.json
+data/chunk-*/file-*.parquet
+videos/<image-feature>/chunk-*/*.mp4
+```
+
+The loader reads parquet rows, decodes every RGB video feature, aligns all camera views by frame, splits frames by `episode_index`, initializes clean quality metadata, and derives state/action dimensions automatically. To keep large multi-camera datasets practical in memory, imported views preserve their aspect ratio and are capped at 128 pixels on the longest edge; cameras with different resolutions are then resized to the same training shape. Original MP4 files are never modified. The dataset must expose `observation.state`, `action`, `episode_index`, `timestamp`, and at least one video feature.
+
+All synchronized cameras are used during training and inference. ACT-Lite and Quality-Aware ACT retain one observation token per camera; image-enabled BC-MLP encodes every camera with shared weights and mean-fuses the camera embeddings. The Dataset Inspector displays the synchronized views side by side. Task text is not currently used, so task-conditioned VLA policies remain a future extension.
+
+For a custom adapter, convert each episode to the public dictionary contract below and pass a list of episodes to `EpisodeWindowDataset` or the training functions:
 
 ```python
 {
-    "observation.image": Tensor[T, 3, H, W],
+    "observation.image": Tensor[T, cameras, 3, H, W],
     "observation.state": Tensor[T, state_dim],
     "action": Tensor[T, action_dim],
     "timestamp": Tensor[T],
@@ -131,7 +172,7 @@ Convert each episode to the public dictionary contract below and pass a list of 
 }
 ```
 
-`sync2act.data.lerobot.LeRobotEpisodeAdapter` is the optional integration boundary. Install with `pip install -e .[lerobot]`; version-specific LeRobot code stays out of the core data and model modules. The adapter currently establishes the dependency boundary and repository loader; dataset-field conversion should be added for the exact LeRobot schema you use.
+`sync2act.data.lerobot.LeRobotEpisodeAdapter` provides the local LeRobot integration boundary. Install optional LeRobot dependencies with `pip install -e .[lerobot]`; version-specific code remains isolated from the core data and model modules.
 
 ## Development and verification
 

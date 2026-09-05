@@ -13,7 +13,7 @@ from sync2act.reporting import generate_report
 from sync2act.training import load_checkpoint, train_policy
 
 DEFAULT_DEMO_CONFIG = {
-    "model": {"name": "bc_mlp", "state_dim": 6, "action_dim": 3, "input_mode": "state_only"},
+    "model": {"name": "bc_mlp", "state_dim": 6, "action_dim": 3, "input_mode": "image_state"},
     "training": {
         "epochs": 2,
         "batch_size": 32,

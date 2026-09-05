@@ -17,10 +17,12 @@ def test_bc_training_and_resume(tmp_path):
         "learning_rate": 0.01,
         "device": "cpu",
         "seed": 3,
+        "checkpoint_name": "bc_mlp_clean_test.pt",
     }
     model = BCMLP(6, 3, hidden_dim=32)
     result = train_policy(model, episodes, config, tmp_path / "first")
     assert result.checkpoint.exists()
+    assert result.checkpoint.name == "bc_mlp_clean_test.pt"
     restored = BCMLP(6, 3, hidden_dim=32)
     payload = load_checkpoint(result.checkpoint, restored)
     resumed = train_policy(
@@ -70,6 +72,28 @@ def test_act_lite_training_steps_lower_loss(tmp_path):
     )
     losses = [event["train_loss"] for event in events if not event.get("epoch_complete")]
     assert min(losses[-4:]) < max(losses[:4])
+
+
+def test_training_accepts_all_camera_views(tmp_path):
+    episodes = generate_demo_episodes(num_episodes=2, length=8, image_size=16)
+    for episode in episodes:
+        first = episode["observation.image"]
+        episode["observation.image"] = torch.stack([first, 1.0 - first], dim=1)
+    model = BCMLP(6, 3, input_mode="image_state", hidden_dim=16)
+    result = train_policy(
+        model,
+        episodes,
+        {
+            "epochs": 1,
+            "max_steps": 1,
+            "batch_size": 4,
+            "learning_rate": 0.001,
+            "device": "cpu",
+            "seed": 2,
+        },
+        tmp_path,
+    )
+    assert result.checkpoint.exists()
 
 
 def test_explicit_clean_validation_uses_training_statistics(tmp_path):

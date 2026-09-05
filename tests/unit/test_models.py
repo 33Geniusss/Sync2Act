@@ -7,12 +7,23 @@ from sync2act.training import load_checkpoint, save_checkpoint
 
 def test_model_forward_shapes():
     state, image = torch.randn(3, 6), torch.randn(3, 3, 32, 32)
+    multi_camera_image = torch.randn(3, 4, 3, 32, 32)
     assert BCMLP(6, 3)(state).shape == (3, 1, 3)
     assert BCMLP(6, 3, "image_state")(state, image).shape == (3, 1, 3)
     assert ACTLite(6, 3, horizon=5, hidden_dim=32, num_layers=1)(state, image).shape == (3, 5, 3)
     assert QualityAwareACT(6, 3, horizon=5, hidden_dim=32, num_layers=1)(
         state, image, torch.ones(3, 5), torch.zeros(3, 1), torch.zeros(3, 1)
     ).shape == (3, 5, 3)
+    assert BCMLP(6, 3, "image_state")(state, multi_camera_image).shape == (3, 1, 3)
+    assert ACTLite(6, 3, horizon=5, hidden_dim=32, num_layers=1)(
+        state, multi_camera_image
+    ).shape == (3, 5, 3)
+
+
+def test_act_lite_retains_one_observation_token_per_camera():
+    model = ACTLite(6, 3, horizon=2, hidden_dim=32, num_layers=1)
+    tokens = model.observation_tokens(torch.randn(2, 6), torch.randn(2, 3, 3, 16, 16))
+    assert tokens.shape == (2, 4, 32)  # three camera tokens plus one state token
 
 
 def test_weighted_loss_padding_and_zero_boundary():

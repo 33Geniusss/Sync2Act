@@ -13,7 +13,7 @@ def build_policy(config: dict) -> nn.Module:
     if name == "bc_mlp":
         return BCMLP(
             **common,
-            input_mode=config.get("input_mode", "state_only"),
+            input_mode=config.get("input_mode", "image_state"),
             hidden_dim=config.get("hidden_dim", 128),
         )
     temporal = {

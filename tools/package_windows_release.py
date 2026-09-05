@@ -17,11 +17,14 @@ REQUIRED_RUNTIME_FILES = {
     "Sync2Act/_internal/pyarrow/lib.cp313-win_amd64.pyd",
     "Sync2Act/_internal/pyarrow/parquet.dll",
 }
+RUNTIME_DATA_DIRECTORIES = {".cache", "datasets", "models"}
 
 
 def _is_runtime_file(path: Path, source: Path) -> bool:
     relative = path.relative_to(source)
     parts = relative.parts
+    if parts and parts[0] in RUNTIME_DATA_DIRECTORIES:
+        return False
     if len(parts) >= 3 and parts[:2] == ("_internal", "pyarrow"):
         if parts[2] in PYARROW_DEVELOPMENT_DIRECTORIES:
             return False

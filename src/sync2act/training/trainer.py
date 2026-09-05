@@ -113,7 +113,10 @@ def train_policy(
         )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output / "checkpoint.pt"
+    checkpoint_name = str(config.get("checkpoint_name", "checkpoint.pt"))
+    if Path(checkpoint_name).name != checkpoint_name or not checkpoint_name.endswith(".pt"):
+        raise ValueError("checkpoint_name must be a .pt filename without a directory")
+    checkpoint_path = output / checkpoint_name
     started = time.perf_counter()
     stopped = False
     epochs = int(config.get("epochs", 3))

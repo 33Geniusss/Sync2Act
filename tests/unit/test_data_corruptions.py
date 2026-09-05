@@ -17,6 +17,12 @@ def test_synthetic_episode_contract():
     assert episodes[0]["observation.image"].shape == (12, 3, 32, 32)
 
 
+def test_multi_camera_episode_contract():
+    episode = generate_demo_episodes(num_episodes=1, length=12, seed=2)[0]
+    episode["observation.image"] = episode["observation.image"].unsqueeze(1).repeat(1, 3, 1, 1, 1)
+    assert validate_episode(episode) == 12
+
+
 def test_corruptions_are_reproducible_and_non_mutating():
     original = generate_demo_episodes(num_episodes=1, length=24)[0]
     snapshot = clone_episode(original)
