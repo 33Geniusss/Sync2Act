@@ -211,7 +211,8 @@ def test_inspector_dimension_selection_quality_plot_and_step_cursor(qtbot):
     assert window.episode_label.text() == f"Episode ({len(window.episodes)} total)"
     assert window.step_label.text() == f"Step ({len(episode['timestamp'])} total)"
     assert len(signal_curves) == 2
-    assert len(quality_curves) == 1
+    camera_count = episode["image_quality"].shape[1]
+    assert len(quality_curves) == camera_count + 2
     np.testing.assert_allclose(signal_curves[0].xData, episode["timestamp"].numpy())
     np.testing.assert_allclose(
         signal_curves[0].yData,
@@ -221,7 +222,13 @@ def test_inspector_dimension_selection_quality_plot_and_step_cursor(qtbot):
         signal_curves[1].yData,
         episode["action"][:, dimension].numpy(),
     )
-    np.testing.assert_allclose(quality_curves[0].yData, episode["quality_score"].numpy())
+    for camera_index in range(camera_count):
+        np.testing.assert_allclose(
+            quality_curves[camera_index].yData,
+            episode["image_quality"][:, camera_index].numpy(),
+        )
+    np.testing.assert_allclose(quality_curves[-2].yData, episode["state_quality"].numpy())
+    np.testing.assert_allclose(quality_curves[-1].yData, episode["action_label_quality"].numpy())
     assert window.signal_plot.getAxis("bottom").labelText == "Time"
     assert window.quality_plot.getAxis("bottom").labelText == "Time"
     expected_timestamp = float(episode["timestamp"][2])
@@ -283,9 +290,7 @@ def test_corruption_targets_and_plot_visibility_follow_type(qtbot):
     assert float(window.state_change_table.item(0, 2).text()) == pytest.approx(
         original_value, abs=1e-6
     )
-    assert float(window.state_change_table.item(0, 3).text()) == pytest.approx(
-        new_value, abs=1e-6
-    )
+    assert float(window.state_change_table.item(0, 3).text()) == pytest.approx(new_value, abs=1e-6)
 
     window.corruption_type.setCurrentText("temporal_shift")
     window.corruption_mode.setCurrentText("action")

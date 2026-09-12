@@ -35,6 +35,8 @@ def load_local_lerobot_dataset(
     progress: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
     max_image_size: int = 128,
+    episode_limit: int | None = None,
+    frames_per_episode_limit: int | None = None,
 ) -> tuple[list[Episode], dict]:
     """Load a LeRobot v3 local repository into Sync2Act's episode contract."""
     root = Path(root).expanduser().resolve()
@@ -53,7 +55,10 @@ def load_local_lerobot_dataset(
     if not video_keys:
         raise ValueError("LeRobot dataset has no video observation feature")
     if "observation.image" in video_keys:
-        video_keys = ["observation.image", *[key for key in video_keys if key != "observation.image"]]
+        video_keys = [
+            "observation.image",
+            *[key for key in video_keys if key != "observation.image"],
+        ]
 
     parquet_paths = sorted(root.glob("data/chunk-*/file-*.parquet"))
     if not parquet_paths:
@@ -72,6 +77,29 @@ def load_local_lerobot_dataset(
     missing_columns = required_columns - set(table.columns)
     if missing_columns:
         raise ValueError(f"Parquet data is missing columns: {sorted(missing_columns)}")
+
+    source_frame_count = len(table)
+    source_episode_indices = table["episode_index"].to_numpy(dtype=np.int64)
+    unique_source_episodes = list(dict.fromkeys(source_episode_indices.tolist()))
+    if episode_limit is not None:
+        if episode_limit <= 0:
+            raise ValueError("episode_limit must be positive")
+        unique_source_episodes = unique_source_episodes[:episode_limit]
+    if frames_per_episode_limit is not None and frames_per_episode_limit <= 0:
+        raise ValueError("frames_per_episode_limit must be positive")
+    selected_positions: list[int] = []
+    for episode_index in unique_source_episodes:
+        positions = np.flatnonzero(source_episode_indices == episode_index)
+        if frames_per_episode_limit is not None:
+            positions = positions[:frames_per_episode_limit]
+        selected_positions.extend(positions.tolist())
+    if not selected_positions:
+        raise ValueError("Dataset selection contains no frames")
+    selected_positions_array = np.asarray(sorted(selected_positions), dtype=np.int64)
+    selected_mask = np.zeros(source_frame_count, dtype=np.bool_)
+    selected_mask[selected_positions_array] = True
+    decode_stop = int(selected_positions_array[-1]) + 1
+    table = table.iloc[selected_positions_array].reset_index(drop=True)
 
     image_shapes: dict[str, list[int]] = {}
     for image_key in video_keys:
@@ -98,48 +126,55 @@ def load_local_lerobot_dataset(
     images = np.empty(
         (frame_count, len(video_keys), 3, target_height, target_width), dtype=np.uint8
     )
-    total_camera_frames = frame_count * len(video_keys)
+    total_camera_frames = decode_stop * len(video_keys)
     for camera_index, image_key in enumerate(video_keys):
         height, width, _ = image_shapes[image_key]
         video_paths = sorted((root / "videos" / Path(image_key)).glob("chunk-*/*.mp4"))
         if not video_paths:
             raise ValueError(f"No MP4 files found for video feature {image_key}")
         camera_buffer = images[:, camera_index]
-        cursor = 0
+        source_cursor = 0
+        selected_cursor = 0
         for video_path in video_paths:
             _check_cancel(cancel_event)
             with av.open(str(video_path)) as container:
                 for frame in container.decode(video=0):
                     _check_cancel(cancel_event)
-                    if cursor >= frame_count:
+                    if source_cursor >= source_frame_count:
                         raise ValueError(
                             f"Video feature {image_key} contains more frames than parquet data"
                         )
-                    rgb = frame.to_ndarray(format="rgb24")
-                    if rgb.shape[:2] != (height, width):
-                        raise ValueError(
-                            f"Decoded frame shape {rgb.shape} for {image_key} does not match "
-                            f"metadata {image_shapes[image_key]}"
-                        )
-                    if (height, width) != (target_height, target_width):
-                        rgb = np.asarray(
-                            Image.fromarray(rgb).resize(
-                                (target_width, target_height), Image.Resampling.BILINEAR
+                    if selected_mask[source_cursor]:
+                        rgb = frame.to_ndarray(format="rgb24")
+                        if rgb.shape[:2] != (height, width):
+                            raise ValueError(
+                                f"Decoded frame shape {rgb.shape} for {image_key} does not match "
+                                f"metadata {image_shapes[image_key]}"
                             )
-                        )
-                    camera_buffer[cursor] = np.transpose(rgb, (2, 0, 1))
-                    cursor += 1
-                    completed = camera_index * frame_count + cursor
-                    if cursor % 128 == 0 or cursor == frame_count:
+                        if (height, width) != (target_height, target_width):
+                            rgb = np.asarray(
+                                Image.fromarray(rgb).resize(
+                                    (target_width, target_height), Image.Resampling.BILINEAR
+                                )
+                            )
+                        camera_buffer[selected_cursor] = np.transpose(rgb, (2, 0, 1))
+                        selected_cursor += 1
+                    source_cursor += 1
+                    completed = camera_index * decode_stop + source_cursor
+                    if source_cursor % 128 == 0 or source_cursor == decode_stop:
                         _emit(
                             progress,
                             15 + int(75 * completed / total_camera_frames),
                             f"Decoding camera {camera_index + 1}/{len(video_keys)}: "
-                            f"{cursor}/{frame_count} frames",
+                            f"{selected_cursor}/{frame_count} selected frames",
                         )
-        if cursor != frame_count:
+                    if source_cursor >= decode_stop:
+                        break
+            if source_cursor >= decode_stop:
+                break
+        if selected_cursor != frame_count:
             raise ValueError(
-                f"Video feature {image_key} has {cursor} frames but parquet data has "
+                f"Video feature {image_key} has {selected_cursor} selected frames but expected "
                 f"{frame_count} rows"
             )
     # images is [T, cameras, RGB, H, W]; every sample therefore carries every view.
@@ -167,8 +202,18 @@ def load_local_lerobot_dataset(
             "observation.state": state_tensor[start:stop],
             "action": action_tensor[start:stop],
             "timestamp": timestamp_tensor[start:stop],
+            "time_offset": torch.zeros(stop - start, dtype=torch.float32),
+            "image_time_offset": torch.zeros(stop - start, len(video_keys), dtype=torch.float32),
+            "state_time_offset": torch.zeros(stop - start, dtype=torch.float32),
+            "action_label_time_offset": torch.zeros(stop - start, dtype=torch.float32),
+            "image_quality": torch.ones(stop - start, len(video_keys), dtype=torch.float32),
+            "state_quality": torch.ones(stop - start, dtype=torch.float32),
+            "action_label_quality": torch.ones(stop - start, dtype=torch.float32),
             "quality_score": torch.ones(stop - start, dtype=torch.float32),
             "missing_mask": torch.zeros(stop - start, dtype=torch.bool),
+            "image_missing_mask": torch.zeros(stop - start, len(video_keys), dtype=torch.bool),
+            "state_missing_mask": torch.zeros(stop - start, dtype=torch.bool),
+            "action_label_missing_mask": torch.zeros(stop - start, dtype=torch.bool),
             "provenance": {
                 "source": "lerobot",
                 "root": str(root),
@@ -193,6 +238,10 @@ def load_local_lerobot_dataset(
         "camera_count": len(video_keys),
         "camera_original_shapes": image_shapes,
         "max_image_size": max_image_size,
+        "source_episodes": len(set(source_episode_indices.tolist())),
+        "source_frames": source_frame_count,
+        "episode_limit": episode_limit,
+        "frames_per_episode_limit": frames_per_episode_limit,
         "state_dim": int(states.shape[1]),
         "action_dim": int(actions.shape[1]),
         "image_shape": [len(video_keys), channels, target_height, target_width],

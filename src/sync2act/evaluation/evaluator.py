@@ -49,18 +49,30 @@ def evaluate_policy(
     model = model.to(device).eval()
     horizon = getattr(model, "horizon", 1)
     dataset = EpisodeWindowDataset(episodes, horizon=horizon, stats=stats)
-    loader = DataLoader(dataset, batch_size=batch_size)
+    loader = DataLoader(dataset, batch_size=batch_size, pin_memory=str(device).startswith("cuda"))
     predictions, targets, episode_ids, steps, latencies = [], [], [], [], []
     with torch.no_grad():
         for batch in loader:
+            image = batch["image"].to(device, non_blocking=True)
+            if image.dtype == torch.uint8:
+                image = image.float().div_(255.0)
+            if str(device).startswith("cuda"):
+                torch.cuda.synchronize()
             start = time.perf_counter()
             prediction = model(
                 state=batch["state"].to(device),
-                image=batch["image"].to(device),
-                quality=batch["quality"].to(device),
+                image=image,
+                image_quality=batch["image_quality"].to(device),
+                state_quality=batch["state_quality"].to(device),
+                image_missing=batch["image_missing"].to(device),
+                state_missing=batch["state_missing"].to(device),
+                image_time_offset=batch["image_time_offset"].to(device),
+                state_time_offset=batch["state_time_offset"].to(device),
                 missing=batch["missing"].to(device),
                 time_offset=batch["time_offset"].to(device),
             )[:, 0].cpu()
+            if str(device).startswith("cuda"):
+                torch.cuda.synchronize()
             latencies.extend(
                 [(time.perf_counter() - start) * 1000 / len(prediction)] * len(prediction)
             )
@@ -73,9 +85,7 @@ def evaluate_policy(
     prediction = torch.cat(predictions)
     target = torch.cat(targets)
     error = prediction - target
-    trajectory_smoothness, jerk = _episode_trajectory_metrics(
-        prediction, episode_ids, steps
-    )
+    trajectory_smoothness, jerk = _episode_trajectory_metrics(prediction, episode_ids, steps)
     latency = torch.tensor(latencies)
     per_episode = []
     for episode_id in sorted(set(episode_ids)):

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch.utils.data import Dataset
 
-from .episode import Episode, validate_episode
+from .episode import Episode, ensure_modal_metadata, validate_episode
 
 
 @dataclass
@@ -42,9 +42,10 @@ class EpisodeWindowDataset(Dataset):
             raise ValueError("At least one episode is required")
         self.episodes = episodes
         self.horizon = horizon
-        self.stats = stats or compute_stats(episodes)
+        self.stats = stats if stats is not None else compute_stats(episodes)
         self.indices: list[tuple[int, int]] = []
         for episode_index, episode in enumerate(episodes):
+            ensure_modal_metadata(episode)
             length = validate_episode(episode)
             self.indices.extend((episode_index, step) for step in range(length))
 
@@ -58,23 +59,35 @@ class EpisodeWindowDataset(Dataset):
         end = min(length, step + self.horizon)
         count = end - step
         actions = torch.zeros(self.horizon, episode["action"].shape[1])
-        quality = torch.zeros(self.horizon)
+        action_label_quality = torch.zeros(self.horizon)
+        action_label_time_offset = torch.zeros(self.horizon)
+        action_label_missing = torch.ones(self.horizon, dtype=torch.bool)
         padding = torch.ones(self.horizon, dtype=torch.bool)
         actions[:count] = episode["action"][step:end]
-        quality[:count] = episode["quality_score"][step:end]
+        action_label_quality[:count] = episode["action_label_quality"][step:end]
+        action_label_time_offset[:count] = episode["action_label_time_offset"][step:end]
+        action_label_missing[:count] = episode["action_label_missing_mask"][step:end]
         padding[:count] = False
         state = (episode["observation.state"][step] - self.stats.state_mean) / self.stats.state_std
         actions = (actions - self.stats.action_mean) / self.stats.action_std
         image = episode["observation.image"][step]
-        if image.dtype == torch.uint8:
-            image = image.float().div(255.0)
         return {
             "image": image,
             "state": state,
             "actions": actions,
-            "quality": quality,
+            "image_quality": episode["image_quality"][step].float(),
+            "state_quality": episode["state_quality"][step].float().reshape(1),
+            "action_label_quality": action_label_quality,
+            "quality": action_label_quality,
+            "image_missing": episode["image_missing_mask"][step],
+            "state_missing": episode["state_missing_mask"][step].reshape(1),
+            "action_label_missing": action_label_missing,
+            "image_time_offset": episode["image_time_offset"][step].float(),
+            "state_time_offset": episode["state_time_offset"][step].float().reshape(1),
+            "action_label_time_offset": action_label_time_offset.float(),
+            # Legacy aliases remain available to old policies and external adapters.
             "missing": episode["missing_mask"][step].float().reshape(1),
-            "time_offset": torch.zeros(1),
+            "time_offset": episode["time_offset"][step].float().reshape(1),
             "padding_mask": padding,
             "episode_index": torch.tensor(episode_index),
             "step": torch.tensor(step),

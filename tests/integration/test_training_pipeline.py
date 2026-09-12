@@ -2,7 +2,9 @@ import json
 
 import torch
 
+from sync2act.corruptions import state_anomaly
 from sync2act.data import generate_demo_episodes
+from sync2act.data.dataset import compute_stats
 from sync2act.pipeline import run_demo
 from sync2act.policies import BCMLP, ACTLite
 from sync2act.training import load_checkpoint, train_policy
@@ -116,10 +118,60 @@ def test_explicit_clean_validation_uses_training_statistics(tmp_path):
         validation_episodes=validation_episodes,
     )
     payload = torch.load(result.checkpoint, map_location="cpu", weights_only=False)
-    expected_mean = torch.cat(
-        [episode["observation.state"] for episode in train_episodes]
-    ).mean(0)
+    expected_mean = torch.cat([episode["observation.state"] for episode in train_episodes]).mean(0)
     assert torch.allclose(torch.tensor(payload["stats"]["state_mean"]), expected_mean)
+
+
+def test_corrupted_training_can_use_frozen_clean_statistics(tmp_path):
+    clean = generate_demo_episodes(num_episodes=2, length=12, image_size=16)
+    clean_stats = compute_stats(clean)
+    corrupted = [
+        state_anomaly(episode, mode="spike", probability=1.0, magnitude=100.0, seed=index)
+        for index, episode in enumerate(clean)
+    ]
+    result = train_policy(
+        BCMLP(6, 3, hidden_dim=16),
+        corrupted,
+        {
+            "epochs": 1,
+            "max_steps": 1,
+            "batch_size": 8,
+            "learning_rate": 0.001,
+            "device": "cpu",
+            "seed": 4,
+        },
+        tmp_path,
+        normalization_stats=clean_stats,
+    )
+    payload = torch.load(result.checkpoint, map_location="cpu", weights_only=False)
+    assert torch.allclose(torch.tensor(payload["stats"]["state_mean"]), clean_stats.state_mean)
+
+
+def test_resume_reuses_checkpoint_statistics(tmp_path):
+    clean = generate_demo_episodes(num_episodes=2, length=12, image_size=16)
+    config = {
+        "epochs": 1,
+        "max_steps": 1,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "device": "cpu",
+        "seed": 4,
+    }
+    first = train_policy(BCMLP(6, 3, hidden_dim=16), clean, config, tmp_path / "first")
+    first_payload = torch.load(first.checkpoint, map_location="cpu", weights_only=False)
+    corrupted = [
+        state_anomaly(episode, mode="spike", probability=1.0, magnitude=100.0, seed=index)
+        for index, episode in enumerate(clean)
+    ]
+    resumed = train_policy(
+        BCMLP(6, 3, hidden_dim=16),
+        corrupted,
+        {**config, "epochs": 2, "max_steps": None},
+        tmp_path / "resumed",
+        resume_from=first.checkpoint,
+    )
+    resumed_payload = torch.load(resumed.checkpoint, map_location="cpu", weights_only=False)
+    assert resumed_payload["stats"] == first_payload["stats"]
 
 
 def test_end_to_end_demo_writes_real_artifacts(tmp_path):

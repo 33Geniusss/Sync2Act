@@ -49,9 +49,7 @@ def test_load_local_lerobot_dataset_builds_episode_contract(tmp_path):
         stream.height = height
         stream.pix_fmt = "yuv420p"
         for value in range(4):
-            rgb = np.full(
-                (height, width, 3), camera_index * 100 + value * 30, dtype=np.uint8
-            )
+            rgb = np.full((height, width, 3), camera_index * 100 + value * 30, dtype=np.uint8)
             for packet in stream.encode(av.VideoFrame.from_ndarray(rgb, format="rgb24")):
                 output.mux(packet)
         for packet in stream.encode():
@@ -70,10 +68,26 @@ def test_load_local_lerobot_dataset_builds_episode_contract(tmp_path):
     assert episodes[0]["observation.state"].shape == (2, 2)
     assert episodes[0]["action"].shape == (2, 2)
     assert episodes[0]["quality_score"].eq(1).all()
+    assert episodes[0]["image_quality"].shape == (2, 2)
+    assert episodes[0]["image_quality"].eq(1).all()
+    assert episodes[0]["state_quality"].eq(1).all()
+    assert episodes[0]["action_label_quality"].eq(1).all()
     assert not episodes[0]["missing_mask"].any()
+    assert episodes[0]["time_offset"].eq(0).all()
     assert metadata["episodes"] == 2
     assert metadata["frames"] == 4
     assert metadata["camera_count"] == 2
     assert metadata["image_keys"] == image_keys
     assert metadata["image_shape"] == [2, 3, 4, 4]
     assert events[-1]["percent"] == 100
+
+    limited, limited_metadata = load_local_lerobot_dataset(
+        tmp_path,
+        max_image_size=4,
+        episode_limit=1,
+        frames_per_episode_limit=1,
+    )
+    assert len(limited) == 1
+    assert limited[0]["action"].shape[0] == 1
+    assert limited_metadata["episodes"] == 1
+    assert limited_metadata["frames"] == 1

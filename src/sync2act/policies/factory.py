@@ -24,9 +24,19 @@ def build_policy(config: dict) -> nn.Module:
         "num_heads": config.get("num_heads", 4),
         "dropout": config.get("dropout", 0.0),
     }
-    if name == "act_lite":
+    if name in {"act_lite", "quality_act_weighted", "quality_weighted_loss"}:
         return ACTLite(**temporal)
-    if name == "quality_act":
+    if name in {
+        "quality_act",
+        "quality_act_input",
+        "quality_act_full",
+        "quality_act_shuffled",
+        "quality_act_constant",
+        "quality_input",
+        "quality_full",
+        "quality_shuffled",
+        "quality_constant",
+    }:
         return QualityAwareACT(
             **temporal, use_quality_features=config.get("use_quality_features", True)
         )

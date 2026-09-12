@@ -2,7 +2,7 @@ import torch
 
 from sync2act.evaluation import TemporalEnsembler
 from sync2act.policies import BCMLP, ACTLite, QualityAwareACT, quality_weighted_action_loss
-from sync2act.training import load_checkpoint, save_checkpoint
+from sync2act.training import inspect_checkpoint, load_checkpoint, save_checkpoint
 
 
 def test_model_forward_shapes():
@@ -12,7 +12,12 @@ def test_model_forward_shapes():
     assert BCMLP(6, 3, "image_state")(state, image).shape == (3, 1, 3)
     assert ACTLite(6, 3, horizon=5, hidden_dim=32, num_layers=1)(state, image).shape == (3, 5, 3)
     assert QualityAwareACT(6, 3, horizon=5, hidden_dim=32, num_layers=1)(
-        state, image, torch.ones(3, 5), torch.zeros(3, 1), torch.zeros(3, 1)
+        state=state,
+        image=image,
+        image_quality=torch.ones(3, 1),
+        state_quality=torch.ones(3, 1),
+        missing=torch.zeros(3, 1),
+        time_offset=torch.zeros(3, 1),
     ).shape == (3, 5, 3)
     assert BCMLP(6, 3, "image_state")(state, multi_camera_image).shape == (3, 1, 3)
     assert ACTLite(6, 3, horizon=5, hidden_dim=32, num_layers=1)(
@@ -23,6 +28,19 @@ def test_model_forward_shapes():
 def test_act_lite_retains_one_observation_token_per_camera():
     model = ACTLite(6, 3, horizon=2, hidden_dim=32, num_layers=1)
     tokens = model.observation_tokens(torch.randn(2, 6), torch.randn(2, 3, 3, 16, 16))
+    assert tokens.shape == (2, 4, 32)  # three camera tokens plus one state token
+
+
+def test_quality_act_uses_per_camera_and_state_quality():
+    model = QualityAwareACT(6, 3, horizon=2, hidden_dim=32, num_layers=1)
+    tokens = model.observation_tokens(
+        state=torch.randn(2, 6),
+        image=torch.randn(2, 3, 3, 16, 16),
+        image_quality=torch.tensor([[1.0, 0.5, 0.0], [0.25, 0.75, 1.0]]),
+        state_quality=torch.tensor([[0.5], [1.0]]),
+        missing=torch.zeros(2, 1),
+        time_offset=torch.zeros(2, 1),
+    )
     assert tokens.shape == (2, 4, 32)  # three camera tokens plus one state token
 
 
@@ -48,6 +66,9 @@ def test_checkpoint_roundtrip_outputs_match(tmp_path):
     restored = BCMLP(6, 3)
     payload = load_checkpoint(path, restored)
     assert payload["step"] == 4
+    assert payload["metadata"]["checkpoint_schema_version"] == 2
+    compatible, reason, _ = inspect_checkpoint(path, expected_model=restored)
+    assert compatible, reason
     assert torch.equal(expected, restored(state).detach())
 
 

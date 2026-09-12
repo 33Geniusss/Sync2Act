@@ -6,7 +6,7 @@
 
 **A PyTorch + native desktop lab for measuring how robot demonstration quality changes imitation-learning behavior.**
 
-Sync2Act turns an episode-based robot dataset into controlled, reproducible experiments: import data, damage selected training episodes, train one of three imitation-learning policies, compare offline predictions, and export an evidence-bearing report. The desktop application starts empty and does not bundle a dataset, trained checkpoint, or benchmark result.
+Sync2Act turns an episode-based robot dataset into controlled, reproducible experiments: import data, damage selected training episodes, train imitation-learning policies and quality ablations, compare offline predictions, and export an evidence-bearing report. The desktop application starts empty and does not bundle a dataset, trained checkpoint, or benchmark result.
 
 ![Sync2Act Overview](assets/gui-overview.png)
 
@@ -19,7 +19,7 @@ Original episodes
 └─ Test episodes       → always clean
 ```
 
-The split is episode-level, preventing frames from one trajectory from leaking across partitions. Corruptions are applied only to the training partition. Normalization statistics come from that partition, while model comparison uses the held-out clean test episodes.
+The split is episode-level, preventing frames from one trajectory from leaking across partitions. Corruptions are applied only to the training partition. Formal corruption studies freeze normalization statistics computed from the clean training episodes and reuse them for every condition; model comparison uses held-out clean test episodes.
 
 ## Quick start from source
 
@@ -36,7 +36,7 @@ Python 3.11–3.13 is supported. Import or download a dataset from **Overview** 
 |---|---|---|
 | BC-MLP | `state[t]` or `image[t] + state[t] → action[t]` | Fast baseline and pipeline debugging |
 | ACT-Lite | `image[t] + state[t] → action[t:t+H]` | Learnable action queries, positional encoding, Transformer, padding-aware chunk loss, receding-horizon temporal ensemble |
-| Quality-Aware ACT | ACT-Lite plus quality token and weighted loss | Tests whether quality metadata reduces sensitivity to damaged demonstrations |
+| Quality-Aware ACT | ACT-Lite plus per-camera/per-state quality conditioning and optional action-label weighted loss | Tests whether modality-specific quality metadata reduces sensitivity to damaged demonstrations |
 
 ACT-Lite is **not** a full reproduction of ACT: it intentionally omits the original CVAE latent-variable path. Quality-Aware ACT subclasses and reuses ACT-Lite rather than maintaining a copied model.
 
@@ -110,7 +110,7 @@ sync2act train --config configs/train/act_lite.yaml --output runs/act-lite
 sync2act evaluate --config configs/eval/default.yaml \
   --checkpoint runs/act-lite/checkpoint.pt --output runs/act-lite/eval
 
-# Full 3-model × 10-condition × 3-seed matrix (CPU-intensive)
+# Small configurable benchmark
 sync2act benchmark --config configs/benchmark/mvp.yaml
 
 # Rebuild a report from completed run manifests only
@@ -121,12 +121,25 @@ Training-data corruption is represented by a `corruption` block in a training co
 
 The desktop workflow performs a deterministic episode-level train/validation/test split before applying damage. Corruption Studio changes training episodes only; validation and test episodes remain clean. Validation uses normalization statistics computed from the training partition, and Evaluation Compare runs only on the held-out clean test episodes. The split indices and ratios are saved with checkpoints and reports.
 
-Every corruption clones its input, accepts a seed, updates `quality_score` and/or `missing_mask`, and attaches provenance with type, parameters, seed, and affected indices. Supported variants are:
+Every corruption clones its input, accepts a seed, updates only the affected modality, and appends an event to `corruption_events` with type, parameters, seed, affected indices, and missing indices. Image metadata is per camera. `image_quality[T, cameras]` and `state_quality[T]` describe model inputs; `action_label_quality[T]` describes supervision reliability and is used only by the weighted training loss. Modality-specific time offsets and missing masks prevent unrelated faults from cancelling one another. Legacy scalar summaries remain available for display and backward compatibility.
+
+Temporal quality is severity-aware: `q = exp(-abs(modality_time_offset) / (2 * median_frame_interval))`. A one-frame offset therefore has quality about `0.607`, while a three-frame offset has quality about `0.223`. Zero/mask boundary samples remain quality `0` because they have no valid source frame.
 
 - temporal shift of image/state/action with `drop`, `repeat`, `zero`, or `mask` boundaries;
 - frame drop with previous-frame, zero-frame, or interpolation replacement;
 - Gaussian/spike action noise and fixed/random action delay;
 - state spike, short missing span, stuck dimension, and timestamp jitter.
+
+The focused quality study constructs deterministic, contiguous mixed-quality segments. Its six ablations are ACT-Lite, quality-input only, quality-weighted-loss only, full quality conditioning, shuffled-quality control, and constant-quality control. Run the full three-dataset, three-seed study with:
+
+```bash
+python tools/run_real_dataset_study.py --skip-download --device cuda \
+  --episodes 0 --frames 0 --epochs 10 --seeds 7 17 27 \
+  --act-batch-size 256 --segment-length 16 \
+  --output runs/quality_ablation_v1_2_0
+```
+
+Each checkpoint is written atomically and records checkpoint/quality schema versions, model and configuration signatures, source version, Git commit, experiment signature, and the quality formula. Resume skips a run only when its manifest, checkpoint, model signature, experiment signature, and evaluation CSV files all agree.
 
 ## Offline evaluation
 
@@ -167,10 +180,22 @@ For a custom adapter, convert each episode to the public dictionary contract bel
     "observation.state": Tensor[T, state_dim],
     "action": Tensor[T, action_dim],
     "timestamp": Tensor[T],
+    "time_offset": Tensor[T],
+    "image_time_offset": Tensor[T, cameras],
+    "state_time_offset": Tensor[T],
+    "action_label_time_offset": Tensor[T],
+    "image_quality": Tensor[T, cameras],
+    "state_quality": Tensor[T],
+    "action_label_quality": Tensor[T],
     "quality_score": Tensor[T],
     "missing_mask": Tensor[T],
+    "image_missing_mask": BoolTensor[T, cameras],
+    "state_missing_mask": BoolTensor[T],
+    "action_label_missing_mask": BoolTensor[T],
 }
 ```
+
+The scalar `quality_score`, `time_offset`, and `missing_mask` fields are derived compatibility summaries. New adapters may omit them; validation creates clean defaults or derives them from the modality-specific fields. Quality must be finite and lie in `[0, 1]`, offsets must be finite, and missing masks must be boolean.
 
 `sync2act.data.lerobot.LeRobotEpisodeAdapter` provides the local LeRobot integration boundary. Install optional LeRobot dependencies with `pip install -e .[lerobot]`; version-specific code remains isolated from the core data and model modules.
 
@@ -181,9 +206,9 @@ python -m ruff check src tests tools
 pytest
 ```
 
-Tests cover corruption shape/reproducibility/non-mutation/provenance, model shapes, weighted-loss edge cases, temporal ensembling, checkpoint equivalence and resume, BC/ACT training, end-to-end artifacts, and GUI event-loop behavior. GUI tests use `QT_QPA_PLATFORM=offscreen` and `SYNC2ACT_RUN_GUI_TESTS=1` in GitHub Actions; locally they skip when no Qt-capable session is exposed.
+Tests cover corruption shape/reproducibility/non-mutation/provenance, mixed-quality construction, modality metadata, model shapes, weighted-loss edge cases, temporal ensembling, versioned checkpoint equivalence and resume, frozen clean statistics, BC/ACT training, end-to-end artifacts, and GUI event-loop behavior. GUI tests use `QT_QPA_PLATFORM=offscreen` and `SYNC2ACT_RUN_GUI_TESTS=1` in GitHub Actions; locally they skip when no Qt-capable session is exposed.
 
-The formal benchmark is intentionally not run during installation. It is a 90-run CPU workload by default and must never be replaced with invented values. Optional next work is a concrete LeRobot field converter followed by a Gymnasium/PushT runtime-corruption wrapper and closed-loop success evaluation.
+The formal study is intentionally not run during installation and must never be replaced with invented values. The focused matrix contains 270 runs: 3 full single-task datasets × 6 ablations × 5 conditions × 3 seeds. Its outputs are offline imitation metrics, not closed-loop success measurements.
 
 ## Repository map
 

@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from sync2act.config import save_config
 from sync2act.corruptions import apply_corruption
 from sync2act.data.dataset import NormalizationStats
+from sync2act.data.episode import ensure_modal_quality
 from sync2act.data.split import split_episode_indices
 from sync2act.evaluation import evaluate_policy
 from sync2act.paths import default_dataset_path, models_root, new_model_checkpoint_path
@@ -461,7 +462,9 @@ class MainWindow(QMainWindow):
         self.load_dataset_button.clicked.connect(self.start_dataset_load)
         self.download_progress = QProgressBar()
         self.download_progress.setRange(0, 100)
-        self.download_status = QLabel("Ready. Public datasets need no token; private datasets use your local Hugging Face login.")
+        self.download_status = QLabel(
+            "Ready. Public datasets need no token; private datasets use your local Hugging Face login."
+        )
         download_form.addWidget(QLabel("Repository ID"), 0, 0)
         download_form.addWidget(self.hf_repo_id, 0, 1, 1, 3)
         download_form.addWidget(QLabel("Revision"), 1, 0)
@@ -520,9 +523,10 @@ class MainWindow(QMainWindow):
         self.signal_plot.setLabel("bottom", "Time", units="s")
         self.signal_plot.setLabel("left", "Value")
         self.signal_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.quality_plot = pg.PlotWidget(title="Quality over time")
+        self.quality_plot = pg.PlotWidget(title="Modality quality over time")
+        self.quality_plot.addLegend()
         self.quality_plot.setLabel("bottom", "Time", units="s")
-        self.quality_plot.setLabel("left", "Quality score")
+        self.quality_plot.setLabel("left", "Quality", units="0-1")
         self.quality_plot.setYRange(0.0, 1.05, padding=0)
         self.quality_plot.showGrid(x=True, y=True, alpha=0.2)
         self.quality_plot.setXLink(self.signal_plot)
@@ -597,9 +601,7 @@ class MainWindow(QMainWindow):
         self.state_change_table.setHorizontalHeaderLabels(
             ["Frame", "Time (s)", "Original", "New", "Delta"]
         )
-        self.state_change_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
+        self.state_change_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.state_change_table.setAlternatingRowColors(True)
         self.state_change_table.setMaximumHeight(220)
         self.state_change_table.horizontalHeader().setSectionResizeMode(
@@ -781,9 +783,7 @@ class MainWindow(QMainWindow):
             self.overview_values["episodes"].setText("0")
             self.overview_values["frames"].setText("0")
             self.overview_values["shape"].setText("not loaded")
-            self.overview_values["device"].setText(
-                "CUDA" if torch.cuda.is_available() else "CPU"
-            )
+            self.overview_values["device"].setText("CUDA" if torch.cuda.is_available() else "CPU")
             self.overview_values["status"].setText("No data")
             self.overview_values["best"].setText("not run")
             self.episode_label.setText("Episode (0 total)")
@@ -882,7 +882,9 @@ class MainWindow(QMainWindow):
             self.download_worker.stop()
         if self.load_worker:
             self.load_worker.stop()
-            self.download_status.setText("Cancellation requested; waiting for the current transfer...")
+            self.download_status.setText(
+                "Cancellation requested; waiting for the current transfer..."
+            )
 
     def on_download_progress(self, event):
         total = int(event.get("total", 0))
@@ -911,7 +913,9 @@ class MainWindow(QMainWindow):
         self.download_button.setEnabled(True)
         self.load_dataset_button.setEnabled(True)
         self.cancel_download_button.setEnabled(False)
-        self.download_status.setText("Download cancelled. Already downloaded files remain reusable.")
+        self.download_status.setText(
+            "Download cancelled. Already downloaded files remain reusable."
+        )
 
     def on_download_failed(self, details):
         self.download_progress.setRange(0, 100)
@@ -1009,19 +1013,13 @@ class MainWindow(QMainWindow):
                     {**config, "seed": config["seed"] + episode_index},
                 )
         self.episodes = working_episodes
-        self.training_episodes = [
-            self.episodes[index] for index in self.episode_split["train"]
-        ]
+        self.training_episodes = [self.episodes[index] for index in self.episode_split["train"]]
         self.validation_episodes = [
             self.original_episodes[index] for index in self.episode_split["validation"]
         ]
-        self.test_episodes = [
-            self.original_episodes[index] for index in self.episode_split["test"]
-        ]
+        self.test_episodes = [self.original_episodes[index] for index in self.episode_split["test"]]
         corruption = (
-            self.active_corruption_config["type"]
-            if self.active_corruption_config
-            else "clean"
+            self.active_corruption_config["type"] if self.active_corruption_config else "clean"
         )
         self.split_summary_label.setText(
             f"Episode split · train {len(self.training_episodes)} ({corruption})"
@@ -1077,6 +1075,7 @@ class MainWindow(QMainWindow):
             return
         episode_index = min(self.episode_spin.value(), len(self.episodes) - 1)
         original, current = self.original_episodes[episode_index], self.episodes[episode_index]
+        ensure_modal_quality(current)
         frame_count = len(current["timestamp"])
         self.step_spin.setMaximum(frame_count - 1)
         self.step_label.setText(f"Step ({frame_count} total)")
@@ -1091,9 +1090,19 @@ class MainWindow(QMainWindow):
         )
         self.timestamp_label.setText(f"t={timestamp:.3f}s · Δt={interval:.3f}s")
         partition = self.episode_partitions.get(episode_index, "not split")
+        image_quality = current["image_quality"][step].numpy().round(2).tolist()
+        image_missing = current["image_missing_mask"][step].numpy().tolist()
+        image_offset = current["image_time_offset"][step].numpy().round(4).tolist()
         self.inspector_detail.setText(
-            f"partition={partition}  quality={float(current['quality_score'][step]):.2f}  "
-            f"missing={bool(current['missing_mask'][step])}  "
+            f"partition={partition}  image quality={image_quality}  "
+            f"state quality={float(current['state_quality'][step]):.2f}  "
+            f"action-label quality={float(current['action_label_quality'][step]):.2f}  "
+            f"image missing={image_missing}  "
+            f"state missing={bool(current['state_missing_mask'][step])}  "
+            f"action-label missing={bool(current['action_label_missing_mask'][step])}  "
+            f"image offset={image_offset}s  "
+            f"state offset={float(current['state_time_offset'][step]):.4f}s  "
+            f"action-label offset={float(current['action_label_time_offset'][step]):.4f}s  "
             f"cameras={1 if current['observation.image'].ndim == 4 else current['observation.image'].shape[1]}  "
             f"state={current['observation.state'][step].numpy().round(3)}"
         )
@@ -1117,10 +1126,25 @@ class MainWindow(QMainWindow):
         )
         self.signal_plot.addItem(self.signal_cursor)
         self.quality_plot.clear()
+        image_colors = ["#13a67a", "#3157d5", "#8b5cf6", "#0891b2"]
+        for camera_index in range(current["image_quality"].shape[1]):
+            self.quality_plot.plot(
+                timestamps,
+                current["image_quality"][:, camera_index].numpy(),
+                pen=pg.mkPen(image_colors[camera_index % len(image_colors)], width=2),
+                name=f"image[{camera_index}]",
+            )
         self.quality_plot.plot(
             timestamps,
-            current["quality_score"].numpy(),
-            pen=pg.mkPen("#13a67a", width=2),
+            current["state_quality"].numpy(),
+            pen=pg.mkPen("#eb6a49", width=2),
+            name="state",
+        )
+        self.quality_plot.plot(
+            timestamps,
+            current["action_label_quality"].numpy(),
+            pen=pg.mkPen("#d19a00", width=2),
+            name="action label",
         )
         self.quality_cursor = pg.InfiniteLine(
             pos=timestamp, angle=90, pen=cursor_pen, movable=False
@@ -1194,13 +1218,9 @@ class MainWindow(QMainWindow):
         self._set_corruption_visual_visibility(kind)
         dimension = max(self.signal_dimension_combo.currentIndex(), 0)
         if kind == "action_noise":
-            self.corruption_plot.setTitle(
-                f"Original vs corrupted action[{dimension}]"
-            )
+            self.corruption_plot.setTitle(f"Original vs corrupted action[{dimension}]")
         elif kind == "state_anomaly":
-            self.corruption_plot.setTitle(
-                f"Original vs corrupted state[{dimension}]"
-            )
+            self.corruption_plot.setTitle(f"Original vs corrupted state[{dimension}]")
         if kind == "temporal_shift":
             self.temporal_shift_diagram.set_configuration(
                 self.corruption_mode.currentText(), int(self.corruption_value.value())
@@ -1213,11 +1233,7 @@ class MainWindow(QMainWindow):
             return
         try:
             config = self._corruption_config()
-            preview_index = (
-                self.episode_split["train"][0]
-                if self.episode_split["train"]
-                else 0
-            )
+            preview_index = self.episode_split["train"][0] if self.episode_split["train"] else 0
             original = self.original_episodes[preview_index]
             preview = apply_corruption(original, config)
             self.corruption_plot.clear()
@@ -1226,9 +1242,7 @@ class MainWindow(QMainWindow):
             timestamps = original["timestamp"].numpy()
             affected = np.asarray(preview["provenance"]["affected_indices"], dtype=int)
             if kind == "action_noise":
-                self.corruption_plot.setTitle(
-                    f"Original vs corrupted action[{dimension}]"
-                )
+                self.corruption_plot.setTitle(f"Original vs corrupted action[{dimension}]")
                 self.corruption_plot.plot(
                     timestamps,
                     original["action"][:, dimension].numpy(),
@@ -1252,9 +1266,7 @@ class MainWindow(QMainWindow):
                 )
                 original_state = original["observation.state"][:, dimension].numpy()
                 changed_state = preview["observation.state"][:, dimension].numpy()
-                self.corruption_plot.setTitle(
-                    f"Original vs corrupted state[{dimension}]"
-                )
+                self.corruption_plot.setTitle(f"Original vs corrupted state[{dimension}]")
                 self.corruption_plot.plot(
                     timestamps, original_state, pen="#9da8c2", name="original"
                 )
@@ -1290,9 +1302,7 @@ class MainWindow(QMainWindow):
                         f"{new_value - original_value:+.6f}",
                     )
                     for column, value in enumerate(values):
-                        self.state_change_table.setItem(
-                            row, column, QTableWidgetItem(value)
-                        )
+                        self.state_change_table.setItem(row, column, QTableWidgetItem(value))
             elif kind == "frame_drop":
                 dropped = np.zeros(len(timestamps), dtype=float)
                 dropped[affected] = 1.0
@@ -1330,14 +1340,24 @@ class MainWindow(QMainWindow):
                     f"{len(affected)} / {len(timestamps)} image frames"
                     f" · indices: {preview_indices}{suffix}"
                 )
-            self.corruption_info.setPlainText(json.dumps(preview["provenance"], indent=2))
+            self.corruption_info.setPlainText(
+                json.dumps(
+                    {
+                        "latest_event": preview["provenance"],
+                        "corruption_events": preview.get("corruption_events", []),
+                    },
+                    indent=2,
+                )
+            )
             self._preview_episode = preview
         except Exception as exc:
             self.corruption_info.setPlainText(str(exc))
 
     def apply_preview(self):
         if not self.original_episodes:
-            QMessageBox.information(self, "No dataset", "Load a dataset before applying corruption.")
+            QMessageBox.information(
+                self, "No dataset", "Load a dataset before applying corruption."
+            )
             return
         config = self._corruption_config()
         self.active_corruption_config = config
@@ -1520,9 +1540,7 @@ class MainWindow(QMainWindow):
                 stats = NormalizationStats.from_dict(payload["stats"])
                 saved_split = payload.get("config", {}).get("episode_split", {})
                 test_indices = saved_split.get("test", self.episode_split["test"])
-                evaluation_episodes = [
-                    self.original_episodes[index] for index in test_indices
-                ]
+                evaluation_episodes = [self.original_episodes[index] for index in test_indices]
                 metrics = evaluate_policy(
                     model,
                     evaluation_episodes,

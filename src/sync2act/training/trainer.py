@@ -12,7 +12,7 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, random_split
 
-from sync2act.data.dataset import EpisodeWindowDataset
+from sync2act.data.dataset import EpisodeWindowDataset, NormalizationStats
 from sync2act.data.episode import Episode
 from sync2act.policies.quality_act import quality_weighted_action_loss
 
@@ -27,21 +27,40 @@ class TrainingResult:
     stopped: bool
 
 
+def _move_batch(batch: dict, device: torch.device) -> dict:
+    moved = {
+        key: value.to(device, non_blocking=True) if torch.is_tensor(value) else value
+        for key, value in batch.items()
+    }
+    if moved["image"].dtype == torch.uint8:
+        moved["image"] = moved["image"].float().div_(255.0)
+    return moved
+
+
 def _loss(model, batch, config):
     prediction = model(
         state=batch["state"],
         image=batch["image"],
-        quality=batch["quality"],
+        image_quality=batch["image_quality"],
+        state_quality=batch["state_quality"],
+        image_missing=batch["image_missing"],
+        state_missing=batch["state_missing"],
+        image_time_offset=batch["image_time_offset"],
+        state_time_offset=batch["state_time_offset"],
         missing=batch["missing"],
         time_offset=batch["time_offset"],
     )
     target = batch["actions"][:, : prediction.shape[1]]
     padding = batch["padding_mask"][:, : prediction.shape[1]]
-    quality = batch["quality"][:, : prediction.shape[1]]
+    action_label_quality = batch["action_label_quality"][:, : prediction.shape[1]]
     use_weighting = config.get("quality_weighted_loss", False)
     if use_weighting:
         action_loss = quality_weighted_action_loss(
-            prediction, target, quality, padding, config.get("loss", "mse")
+            prediction,
+            target,
+            action_label_quality,
+            padding,
+            config.get("loss", "mse"),
         )
     else:
         valid = (~padding).unsqueeze(-1).expand_as(prediction)
@@ -68,6 +87,7 @@ def train_policy(
     stop_event: threading.Event | None = None,
     resume_from: str | Path | None = None,
     validation_episodes: list[Episode] | None = None,
+    normalization_stats: NormalizationStats | None = None,
 ) -> TrainingResult:
     seed = int(config.get("seed", 7))
     random.seed(seed)
@@ -76,7 +96,11 @@ def train_policy(
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
     horizon = int(config.get("horizon", getattr(model, "horizon", 1)))
-    dataset = EpisodeWindowDataset(episodes, horizon=horizon)
+    if resume_from is not None and normalization_stats is None:
+        resume_payload = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
+        if resume_payload.get("stats"):
+            normalization_stats = NormalizationStats.from_dict(resume_payload["stats"])
+    dataset = EpisodeWindowDataset(episodes, horizon=horizon, stats=normalization_stats)
     if validation_episodes is None:
         val_size = max(1, int(len(dataset) * float(config.get("validation_split", 0.15))))
         train_size = len(dataset) - val_size
@@ -85,16 +109,19 @@ def train_policy(
         )
     else:
         train_set = dataset
-        val_set = EpisodeWindowDataset(
-            validation_episodes, horizon=horizon, stats=dataset.stats
-        )
+        val_set = EpisodeWindowDataset(validation_episodes, horizon=horizon, stats=dataset.stats)
     loader = DataLoader(
         train_set,
         batch_size=int(config.get("batch_size", 32)),
         shuffle=True,
         generator=torch.Generator().manual_seed(seed),
+        pin_memory=device.type == "cuda",
     )
-    val_loader = DataLoader(val_set, batch_size=int(config.get("batch_size", 32)))
+    val_loader = DataLoader(
+        val_set,
+        batch_size=int(config.get("batch_size", 32)),
+        pin_memory=device.type == "cuda",
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config.get("learning_rate", 1e-3)),
@@ -129,10 +156,7 @@ def train_policy(
             if stop_event and stop_event.is_set():
                 stopped = True
                 break
-            batch = {
-                key: value.to(device) if torch.is_tensor(value) else value
-                for key, value in batch.items()
-            }
+            batch = _move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             loss, action_loss, smoothness = _loss(model, batch, config)
             loss.backward()
@@ -163,10 +187,7 @@ def train_policy(
         validation = []
         with torch.no_grad():
             for batch in val_loader:
-                batch = {
-                    key: value.to(device) if torch.is_tensor(value) else value
-                    for key, value in batch.items()
-                }
+                batch = _move_batch(batch, device)
                 validation.append(float(_loss(model, batch, config)[0]))
         record = {
             "epoch": epoch,

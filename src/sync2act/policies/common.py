@@ -24,9 +24,7 @@ class ImageEncoder(nn.Module):
         if image.ndim == 4 and image.shape[1] == 3:
             image = image.unsqueeze(1)
         if image.ndim != 5 or image.shape[1] == 0 or image.shape[2] != 3:
-            raise ValueError(
-                "image must have shape [B, 3, H, W] or [B, cameras, 3, H, W]"
-            )
+            raise ValueError("image must have shape [B, 3, H, W] or [B, cameras, 3, H, W]")
         batch, cameras, channels, height, width = image.shape
         encoded = self.network(image.reshape(batch * cameras, channels, height, width))
         return encoded.reshape(batch, cameras, -1)

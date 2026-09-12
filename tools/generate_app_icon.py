@@ -25,24 +25,18 @@ def build_icon() -> Image.Image:
 
     shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle(
-        (74, 86, 950, 962), radius=218, fill=(19, 33, 66, 105)
-    )
+    shadow_draw.rounded_rectangle((74, 86, 950, 962), radius=218, fill=(19, 33, 66, 105))
     image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(30)))
 
     tile_mask = Image.new("L", image.size, 0)
-    ImageDraw.Draw(tile_mask).rounded_rectangle(
-        (62, 62, 962, 962), radius=220, fill=255
-    )
+    ImageDraw.Draw(tile_mask).rounded_rectangle((62, 62, 962, 962), radius=220, fill=255)
     gradient = Image.new("RGBA", image.size)
     pixels = gradient.load()
     top = (108, 135, 255)
     bottom = (43, 73, 190)
     for y in range(CANVAS):
         ratio = y / (CANVAS - 1)
-        color = tuple(
-            round(a + (b - a) * ratio) for a, b in zip(top, bottom, strict=True)
-        )
+        color = tuple(round(a + (b - a) * ratio) for a, b in zip(top, bottom, strict=True))
         for x in range(CANVAS):
             pixels[x, y] = (*color, 255)
     gradient.putalpha(tile_mask)
@@ -88,7 +82,17 @@ def main() -> int:
     image.save(
         ico_path,
         format="ICO",
-        sizes=[(16, 16), (20, 20), (24, 24), (32, 32), (40, 40), (48, 48), (64, 64), (128, 128), (256, 256)],
+        sizes=[
+            (16, 16),
+            (20, 20),
+            (24, 24),
+            (32, 32),
+            (40, 40),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        ],
     )
     print(png_path)
     print(ico_path)

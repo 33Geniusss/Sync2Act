@@ -162,6 +162,9 @@ def download_dataset_snapshot(
             repo_type="dataset",
             revision=revision,
             cache_dir=str(cache),
+            # Hub 1.x can race its Windows symlink capability probe across worker
+            # threads, causing WinError 1314 before its documented copy fallback.
+            max_workers=1 if os.name == "nt" else 8,
             tqdm_class=_progress_tqdm(progress, cancel_event),
         )
     )

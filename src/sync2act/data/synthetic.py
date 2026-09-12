@@ -49,8 +49,18 @@ def generate_demo_episodes(
                 "observation.state": state.float(),
                 "action": action.float(),
                 "timestamp": (time * (length - 1) / 20.0).float(),
+                "time_offset": torch.zeros(length, dtype=torch.float32),
+                "image_time_offset": torch.zeros(length, 1, dtype=torch.float32),
+                "state_time_offset": torch.zeros(length, dtype=torch.float32),
+                "action_label_time_offset": torch.zeros(length, dtype=torch.float32),
+                "image_quality": torch.ones(length, 1, dtype=torch.float32),
+                "state_quality": torch.ones(length, dtype=torch.float32),
+                "action_label_quality": torch.ones(length, dtype=torch.float32),
                 "quality_score": torch.ones(length, dtype=torch.float32),
                 "missing_mask": torch.zeros(length, dtype=torch.bool),
+                "image_missing_mask": torch.zeros(length, 1, dtype=torch.bool),
+                "state_missing_mask": torch.zeros(length, dtype=torch.bool),
+                "action_label_missing_mask": torch.zeros(length, dtype=torch.bool),
                 "episode_id": episode_id,
             }
         )

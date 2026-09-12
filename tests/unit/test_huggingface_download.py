@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from types import SimpleNamespace
 
@@ -42,6 +43,7 @@ def test_download_dataset_snapshot_uses_dataset_repo_and_reports_progress(tmp_pa
     assert received["revision"] == "v1"
     assert "local_dir" not in received
     assert received["cache_dir"] == str((tmp_path / "cache").resolve())
+    assert received["max_workers"] == (1 if os.name == "nt" else 8)
     assert (target / "meta" / "info.json").read_text(encoding="utf-8") == "{}"
     assert (target / "data" / "chunk-000" / "file-000.parquet").read_bytes() == b"parquet"
     assert not (target / ".cache").exists()

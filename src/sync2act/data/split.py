@@ -24,9 +24,7 @@ def split_episode_indices(
             "train, validation, and test partitions"
         )
 
-    validation_count = (
-        max(1, int(episode_count * validation_split)) if validation_split > 0 else 0
-    )
+    validation_count = max(1, int(episode_count * validation_split)) if validation_split > 0 else 0
     test_count = max(1, int(episode_count * test_split)) if test_split > 0 else 0
     while validation_count + test_count >= episode_count:
         if validation_count >= test_count and validation_count > int(validation_split > 0):

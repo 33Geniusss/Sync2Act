@@ -41,11 +41,7 @@ def verify(target: Path) -> None:
         missing = REQUIRED_RUNTIME_FILES - names
         if missing:
             raise RuntimeError(f"Packaged archive is missing runtime files: {missing}")
-        bad_entries = [
-            name
-            for name in names
-            if name.endswith(tuple(PYARROW_UNUSED_RUNTIME_FILES))
-        ]
+        bad_entries = [name for name in names if name.endswith(tuple(PYARROW_UNUSED_RUNTIME_FILES))]
         if bad_entries:
             raise RuntimeError(f"Packaged archive contains excluded files: {bad_entries}")
 
@@ -79,7 +75,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("release/Sync2Act-Windows-x64-v1.1.0.zip"),
+        default=Path("release/Sync2Act-Windows-x64-v1.2.0.zip"),
     )
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()

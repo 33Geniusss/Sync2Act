@@ -9,9 +9,7 @@ def test_trajectory_metrics_never_cross_episode_boundaries():
     episode_ids = [0, 0, 0, 1, 1]
     steps = [0, 1, 2, 0, 1]
 
-    smoothness, jerk = _episode_trajectory_metrics(
-        prediction, episode_ids, steps
-    )
+    smoothness, jerk = _episode_trajectory_metrics(prediction, episode_ids, steps)
 
     # Episode-local velocities are [1, 2] and [2]. The 97-unit boundary jump
     # between episodes must not contribute to either metric.
