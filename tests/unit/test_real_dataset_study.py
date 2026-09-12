@@ -1,7 +1,19 @@
+import importlib.util
 import json
 from pathlib import Path
 
-from tools import run_real_dataset_study as study_runner
+
+def _load_study_runner():
+    path = Path(__file__).resolve().parents[2] / "tools" / "run_real_dataset_study.py"
+    spec = importlib.util.spec_from_file_location("sync2act_real_dataset_study", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load study runner from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+study_runner = _load_study_runner()
 
 
 def test_bare_report_only_reuses_saved_study_configuration(
