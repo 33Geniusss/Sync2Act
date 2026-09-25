@@ -1,0 +1,335 @@
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[a4paper,top=18mm,bottom=20mm,left=19mm,right=19mm]{geometry}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{xcolor,tcolorbox}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{pgfplots}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\pgfplotsset{compat=1.18}
+
+\definecolor{navy}{HTML}{17324D}
+\definecolor{blue}{HTML}{2F6BFF}
+\definecolor{teal}{HTML}{00A6A6}
+\definecolor{orange}{HTML}{E9852D}
+\definecolor{purple}{HTML}{7456B8}
+\definecolor{rose}{HTML}{D45576}
+\definecolor{green}{HTML}{3B9A66}
+\definecolor{ink}{HTML}{263442}
+\definecolor{muted}{HTML}{66788A}
+\definecolor{panel}{HTML}{F3F6FA}
+\definecolor{rule}{HTML}{D8E0E8}
+
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=blue,pdftitle={Sync2Act Mixed Modality Damage Study}}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.25em}
+\setlength{\headheight}{24pt}
+\setlist{nosep,leftmargin=2em}
+\renewcommand{\arraystretch}{1.22}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textcolor{muted}{Sync2Act / Quality-Aware ACT}}
+\rhead{\textcolor{muted}{混合模态损坏研究}}
+\cfoot{\textcolor{muted}{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rule}\leaders\hrule height \headrulewidth\hfill}}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\good}[1]{\textcolor{green}{\bfseries #1}}
+\newcommand{\warn}[1]{\textcolor{orange}{\bfseries #1}}
+
+\begin{document}
+
+\begin{titlepage}
+\pagecolor{panel}
+\vspace*{14mm}
+{\color{blue}\rule{25mm}{2.5pt}}\\[11mm]
+{\fontsize{28}{34}\selectfont\bfseries\color{navy} Sync2Act\\[2mm]
+混合模态数据损坏研究\par}
+\vspace{5mm}
+{\Large\color{muted}完整真实数据集、六组消融、三个随机种子\par}
+\vspace{15mm}
+
+\begin{tcolorbox}[colback=white,colframe=rule,boxrule=0.7pt,arc=2mm,left=5mm,right=5mm,top=4mm,bottom=4mm]
+\begin{tabularx}{\linewidth}{>{\bfseries\color{navy}}p{33mm}Y}
+实验规模 & 3 数据集 $\times$ 6 消融 $\times$ 5 条件 $\times$ 3 seeds\\
+完成状态 & \good{270 / 270 组成功完成并通过完整性审计}\\
+训练范围 & 完整 episode、完整 frame、全部相机；仅训练集损坏\\
+核心指标 & 干净测试集 action MSE，以及相对同模型同 seed 干净基线的 MSE 比值\\
+生成日期 & 2026-09-25
+\end{tabularx}
+\end{tcolorbox}
+
+\vfill
+{\large\color{ink}\bfseries 结论预览}\par
+\vspace{2mm}
+{\color{ink}当 action 标签发生错位或缺失时，正确对齐的 Oracle action-label quality 几乎消除了平均退化：Quality-Full 的相对 MSE 为 $0.977\times$，而 ACT-Lite 为 $2.432\times$。在综合损坏下，Quality-Full 将平均相对 MSE 从 $1.535\times$ 降至 $1.144\times$。state quality 输入也有帮助，但 image quality 在当前离线指标上没有形成清晰收益。\par}
+\vspace{11mm}
+{\small\color{muted}实验输出：\code{runs/mixed\_modality\_damage\_v1\_3\_0} \hfill Sync2Act}
+\end{titlepage}
+\nopagecolor
+
+\section{研究问题与结论边界}
+
+本轮实验研究四种训练集混合质量情形：仅图像损坏、仅 state 损坏、仅 action 标签损坏，以及三种模态同时混合损坏。核心问题是：在训练数据中同时存在干净和损坏片段时，按模态拆分的质量信息应当作为模型输入、作为 loss 权重，还是二者同时使用。
+
+实验中的 quality 是由已知合成损坏过程直接给出的 \textbf{Oracle quality}。它代表“如果我们准确知道每个样本哪里坏了”时的性能上界，不是部署时可以自动获得的传感器信号。所有结果均为干净测试集上的\textbf{离线动作预测}；MSE 与 MAE 不能替代真实机器人或仿真器中的闭环成功率、回报和安全失败率。
+
+\section{数据集与训练协议}
+
+三个数据集均来自真实机器人环境且通过单任务检查。图像训练使用每个数据集的全部同步相机，而不是只选一个视角。数据先按 episode 固定划分，再只对训练 episodes 构造损坏，避免同一 episode 的相邻帧跨训练和测试泄漏。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Y C{14mm} C{18mm} C{14mm} C{22mm} C{24mm}}
+\toprule
+数据集 & Episode & Frame & 相机 & State / Action & Train / Val / Test\\
+\midrule
+XArm Lift Medium & 800 & 20,000 & 1 & 4 / 4 & 640 / 80 / 80\\
+Koch Pick Place 1 Lego & 100 & 32,951 & 2 & 6 / 6 & 80 / 10 / 10\\
+ALOHA Static Battery & 49 & 29,400 & 4 & 14 / 14 & 41 / 4 / 4\\
+\bottomrule
+\end{tabularx}
+\caption{完整数据集统计。训练分别使用 1、2、4 路同步相机。}
+\end{table}
+
+统一配置为 10 epochs、CUDA、batch size 256、segment length 16、随机种子 7/17/27、划分种子 7。图像最长边缩放到 64 像素。Normalization statistics 只由干净 Training episodes 计算，并在同一数据集的 90 个组合间固定。验证集和测试集始终保持干净。
+
+\begin{tcolorbox}[colback=panel,colframe=rule,title={\color{navy}\bfseries 数据隔离与审计},fonttitle=\bfseries]
+270 个 run 均保存独立 checkpoint、预测 CSV、per-episode 指标和 run manifest。审计确认 checkpoint schema、quality schema、experiment signature 与 run metadata 一致；每个数据集只有一套 normalization statistics；没有缺失或重复组合。
+\end{tcolorbox}
+
+\section{混合损坏条件}
+
+每个 episode 被划分为连续 segment，再按权重互斥地分配到一个 component。同一 segment 不会同时被计入多个百分比桶。Temporal shift 使用 2 frames，边界位置标记为 missing；模态缺失将对应输入或标签置零，同时把该模态 quality 置为 0 并记录 missing mask 与 provenance。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{p{39mm}Y}
+\toprule
+训练条件 & Segment 构成\\
+\midrule
+Clean & 100\% clean\\
+Mixed image damaged & 50\% clean + 40\% image shift 2 + 10\% image missing\\
+Mixed state damaged & 50\% clean + 40\% state shift 2 + 10\% state missing\\
+Mixed action damaged & 50\% clean + 40\% action shift 2 + 10\% action-label missing\\
+Mixed three corruptions & 20\% clean + 20\% image shift 2 + 20\% state shift 2 + 25\% action shift 2 + image/state/action missing 各 5\%\\
+\bottomrule
+\end{tabularx}
+\caption{本轮正式实验的五个训练条件。}
+\end{table}
+
+在所有数据集和 seeds 中，实际 segment 比例与目标比例的最大偏差约为 0.03 个百分点。由于 episode 尾部 segment 长度可能不足 16，按 frame 统计的比例存在小幅偏差：单模态条件中各 component 的 frame 比例偏差不超过约 0.35 个百分点；综合条件不超过约 0.83 个百分点。
+
+\section{六组 ACT / Quality 消融}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{p{38mm} C{24mm} C{26mm} Y}
+\toprule
+模型 & Quality 输入 & Action-label 加权 loss & 目的\\
+\midrule
+ACT-Lite & 否 & 否 & 无质量信息的基线\\
+Quality-Input & 是 & 否 & 仅测试质量条件输入\\
+Quality-Weighted-Loss & 否 & 是 & 仅测试坏 action 标签降权\\
+Quality-Full & 是 & 是 & 完整方法\\
+Quality-Shuffled & 打乱 & 是 & 破坏质量与样本的对应关系\\
+Quality-Constant & 常数 & 是 & 所有样本伪装为干净\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Image/state missing 不会自动删除整帧：样本仍参加训练，模型通过 observation quality 与 missing mask 得知输入不可靠。Action missing 则是标签可靠性问题；只有使用 action-label quality 加权 loss 的模型才会降低或屏蔽该标签的监督贡献。
+
+\section{指标与汇总方法}
+
+主要指标是干净测试集上的 action mean squared error：
+\[
+\mathrm{MSE}=\frac{1}{N d}\sum_{i=1}^{N}\lVert\hat{a}_i-a_i\rVert_2^2.
+\]
+三个数据集的 action 单位和尺度不同，因此跨数据集使用同一模型、同一 seed 的相对比值：
+\[
+R=\frac{\mathrm{MSE}_{\mathrm{damaged\ train}\rightarrow\mathrm{clean\ test}}}
+{\mathrm{MSE}_{\mathrm{clean\ train}\rightarrow\mathrm{clean\ test}}}.
+\]
+$R=1$ 表示与干净训练持平，$R>1$ 表示退化。下文的总体数字先在每个 dataset-model-seed 内计算 $R$，再对 3 个数据集与 3 个 seeds 的 9 个比值取均值。
+
+\section{总体结果}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.99\linewidth,height=77mm,
+ymin=0.85,ymax=2.65,
+ylabel={平均 MSE 比值 $R$},
+symbolic x coords={Image,State,Action,Mixed},
+xtick=data,
+legend style={at={(0.5,-0.24)},anchor=north,legend columns=3,font=\scriptsize,draw=none},
+grid=major,grid style={rule!60},axis line style={rule},tick style={rule},
+every axis plot/.append style={thick,mark size=2pt}]
+\addplot[color=navy,mark=*] coordinates {(Image,0.999)(State,1.388)(Action,2.432)(Mixed,1.535)};
+\addlegendentry{ACT-Lite}
+\addplot[color=blue,mark=square*] coordinates {(Image,0.995)(State,1.234)(Action,2.394)(Mixed,2.007)};
+\addlegendentry{Quality-Input}
+\addplot[color=orange,mark=triangle*] coordinates {(Image,1.000)(State,1.374)(Action,0.992)(Mixed,1.163)};
+\addlegendentry{Weighted-Loss}
+\addplot[color=teal,mark=diamond*] coordinates {(Image,0.996)(State,1.238)(Action,0.977)(Mixed,1.144)};
+\addlegendentry{Quality-Full}
+\addplot[color=rose,mark=pentagon*] coordinates {(Image,1.004)(State,1.449)(Action,2.463)(Mixed,1.538)};
+\addlegendentry{Shuffled}
+\addplot[color=purple,mark=x] coordinates {(Image,0.994)(State,1.303)(Action,2.401)(Mixed,1.500)};
+\addlegendentry{Constant}
+\addplot[color=muted,dashed,no marks] coordinates {(Image,1)(Mixed,1)};
+\end{axis}
+\end{tikzpicture}
+\caption{三个数据集与三个 seeds 的平均相对 MSE。越低越好；虚线为干净训练基准。}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+模型 & Image damaged & State damaged & Action damaged & Mixed\\
+\midrule
+ACT-Lite & 0.999 & 1.388 & 2.432 & 1.535\\
+Quality-Input & 0.995 & \good{1.234} & 2.394 & 2.007\\
+Weighted-Loss & 1.000 & 1.374 & 0.992 & 1.163\\
+Quality-Full & 0.996 & 1.238 & \good{0.977} & \good{1.144}\\
+Shuffled & 1.004 & 1.449 & 2.463 & 1.538\\
+Constant & \good{0.994} & 1.303 & 2.401 & 1.500\\
+\bottomrule
+\end{tabular}
+\caption{平均 MSE 比值。绿色仅标示列内最小值，不代表统计显著性。}
+\end{table}
+
+\section{按故障模态解读}
+
+\subsection{Action 标签损坏：加权 loss 是关键}
+
+ACT-Lite 在 action-damaged 条件下平均退化到 $2.432\times$，Quality-Input 仍为 $2.394\times$。这说明即使模型知道当前标签质量低，只要错误标签继续以普通权重进入 loss，监督信号仍会把模型拉向错误目标。
+
+Quality-Weighted-Loss 将比值降至 $0.992\times$，Quality-Full 为 $0.977\times$。Shuffled 与 Constant 分别退化到 $2.463\times$ 和 $2.401\times$，证明收益来自\textbf{正确对齐的逐样本 action-label quality}，而不是额外输入维度、随机降权或模型容量。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Y rrr}
+\toprule
+模型 & XArm MSE & Koch MSE & ALOHA MSE\\
+\midrule
+ACT-Lite & 0.406790 & 21.5804 & 0.0009031\\
+Quality-Input & 0.405661 & 21.4460 & 0.0009163\\
+Weighted-Loss & 0.388007 & 7.3369 & 0.0002718\\
+Quality-Full & \good{0.387742} & \good{7.3168} & \good{0.0002662}\\
+Shuffled & 0.407930 & 21.8305 & 0.0009603\\
+Constant & 0.406804 & 21.5116 & 0.0009184\\
+\bottomrule
+\end{tabularx}
+\caption{Mixed action damaged 的三-seed 平均绝对 MSE。不同数据集之间不可横向比较数值大小。}
+\end{table}
+
+\subsection{State 观测损坏：quality 输入有帮助但不完全}
+
+State damaged 使 ACT-Lite 平均退化到 $1.388\times$。Quality-Input 和 Quality-Full 分别为 $1.234\times$ 与 $1.238\times$，优于不使用 observation quality 的 Weighted-Loss（$1.374\times$）。然而两者仍明显高于 1，说明 quality 元数据只能帮助模型识别不可靠 state，并不能恢复被错位或置零的信息。
+
+\subsection{Image 观测损坏：当前离线指标不敏感}
+
+所有模型在 image-damaged 条件下都约为 $1.0\times$。正确 image quality、打乱 quality 和恒定 quality 之间没有稳定差距。这个结果只能说明在当前 64 像素输入、所选任务与离线 action MSE 下，40\% 两帧图像错位加 10\% 全相机缺失没有形成可辨别的平均退化；不能据此断言真实闭环控制对视觉故障不敏感。
+
+\subsection{综合损坏：主要收益来自处理坏 action 标签}
+
+综合条件下，ACT-Lite 为 $1.535\times$，Quality-Input 反而达到 $2.007\times$；Weighted-Loss 与 Quality-Full 分别降至 $1.163\times$ 和 $1.144\times$。Full 仅比 Weighted-Loss 略好，说明主要收益仍来自 action-label weighting，observation quality 的额外贡献较小且随 seed 波动。
+
+\section{数据集差异与配对比较}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\begin{tabular}{p{32mm}p{31mm}rrrr}
+\toprule
+数据集 & 模型 & Image & State & Action & Mixed\\
+\midrule
+XArm Lift & ACT-Lite & 1.000 & 1.024 & 1.073 & 1.059\\
+ & Quality-Full & 1.000 & 1.013 & 1.024 & 1.029\\
+Koch Pick Place & ACT-Lite & 1.000 & 1.467 & 2.958 & 1.774\\
+ & Quality-Full & 1.017 & 1.270 & 0.964 & 1.123\\
+ALOHA Battery & ACT-Lite & 0.997 & 1.674 & 3.265 & 1.773\\
+ & Quality-Full & 0.973 & 1.430 & 0.942 & 1.279\\
+\bottomrule
+\end{tabular}
+\caption{按数据集汇总的三-seed 平均 MSE 比值。}
+\end{table}
+
+XArm 对本轮损坏整体较不敏感；Koch 与 ALOHA 的 state/action 损坏更明显。因此不能只用一个数据集判断质量机制。Quality-Full 相对 ACT-Lite 在 36 个损坏配对中有 31 个获得更低绝对 MSE，按各自 clean 基线归一化后也是 31/36。相对 Shuffled 为 32/36 个更低绝对 MSE，相对 Constant 为 29/36。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Y C{29mm} C{29mm} C{24mm}}
+\toprule
+比较 & Full 更低绝对 MSE & Full 更低相对比值 & 总配对数\\
+\midrule
+Quality-Full vs ACT-Lite & 31 & 31 & 36\\
+Quality-Full vs Shuffled & 32 & 31 & 36\\
+Quality-Full vs Constant & 29 & 29 & 36\\
+Quality-Full vs Quality-Input & 29 & 28 & 36\\
+Quality-Full vs Weighted-Loss & 23 & 24 & 36\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{结论与下一步}
+
+\begin{tcolorbox}[colback=panel,colframe=teal,boxrule=0.8pt,arc=1.5mm,title={\color{navy}\bfseries 主要结论}]
+\begin{enumerate}
+\item \textbf{Oracle action-label quality 有效。}它在 Koch 与 ALOHA 上大幅消除 action shift/missing 带来的退化，并通过 shuffled/constant 控制验证了对齐信息的重要性。
+\item \textbf{State quality 输入有中等收益。}它降低了 state-damaged 的平均误差，但无法恢复缺失信息，结果仍差于 clean。
+\item \textbf{Image quality 暂无清晰收益。}当前损坏强度、图像分辨率和离线 action MSE 可能不足以显现闭环视觉风险。
+\item \textbf{Quality-Full 对综合损坏最稳健。}但它相对仅 Weighted-Loss 的优势较小，主要提升仍来自 action-label weighting。
+\end{enumerate}
+\end{tcolorbox}
+
+建议下一阶段按以下顺序推进：
+\begin{enumerate}
+\item 用已知 corruption provenance 训练自动质量估计器，分别预测 image/state/action-label quality，并报告校准误差；
+\item 用预测 quality 替换 Oracle quality，量化从理论上界到可部署方案的性能损失；
+\item 提高 image shift/missing 的严重度和持续时间，并保留高分辨率视觉特征，判断当前“近似无影响”是否由实验灵敏度不足造成；
+\item 在仿真或真实机器人上做闭环 rollout，报告成功率、安全失败类型和恢复行为；
+\item 若闭环趋势仍成立，再扩展更多 seeds、任务与损坏强度，并使用配对置信区间或显著性检验。
+\end{enumerate}
+
+\section{可复现性与产物索引}
+
+本轮累计 GPU 训练时间为 5.40 小时，不含数据下载、四相机视频解码、评估和报告生成。完整性检查结果为 270/270；270 个 checkpoint 的 metadata 与 run manifest 均匹配。旧实验目录没有参与恢复或结果汇总。
+
+\noindent\begin{tabularx}{\linewidth}{p{42mm}Y}
+\toprule
+内容 & 路径\\
+\midrule
+实验定义与总览 & \path{runs/mixed_modality_damage_v1_3_0/study.json}\\
+结构化汇总 & \path{runs/mixed_modality_damage_v1_3_0/results.csv}\\
+完整 JSON 证据 & \path{runs/mixed_modality_damage_v1_3_0/results.json}\\
+交互式 HTML 报告 & \path{runs/mixed_modality_damage_v1_3_0/report.html}\\
+单次运行记录 & \path{runs/mixed_modality_damage_v1_3_0/<dataset>/<model>/<condition>/seed-*/}\\
+\bottomrule
+\end{tabularx}
+
+\vfill
+\begin{center}
+\small\color{muted}
+本报告由 Sync2Act 实验 schema v3、quality schema v2 的实测输出生成。\\
+软件版本记录：Sync2Act v1.2.0；Git commit \code{a5b4fbbe1e7cb8c9704c3dbfc19a1ba563662068}。
+\end{center}
+
+\end{document}
