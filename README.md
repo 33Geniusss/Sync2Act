@@ -127,17 +127,49 @@ Temporal quality is severity-aware: `q = exp(-abs(modality_time_offset) / (2 * m
 
 - temporal shift of image/state/action with `drop`, `repeat`, `zero`, or `mask` boundaries;
 - frame drop with previous-frame, zero-frame, or interpolation replacement;
+- full image/state/action-label missingness with zero placeholders, zero quality, and matching modality masks;
 - Gaussian/spike action noise and fixed/random action delay;
 - state spike, short missing span, stuck dimension, and timestamp jitter.
 
-The focused quality study constructs deterministic, contiguous mixed-quality segments. Its six ablations are ACT-Lite, quality-input only, quality-weighted-loss only, full quality conditioning, shuffled-quality control, and constant-quality control. Run the full three-dataset, three-seed study with:
+The focused quality study constructs deterministic, contiguous mixed-quality segments. Its six ablations are ACT-Lite, quality-input only, quality-weighted-loss only, full quality conditioning, shuffled-quality control, and constant-quality control. The active matrix contains four damaged-training conditions:
+
+- `mixed_image_damaged`: 50% clean, 40% image shift by two frames, and 10% image missing;
+- `mixed_state_damaged`: 50% clean, 40% state shift by two frames, and 10% state missing;
+- `mixed_action_damaged`: 50% clean, 40% action shift by two frames, and 10% action-label missing;
+- `mixed_three_corruptions`: 20% clean, 20% image shift, 20% state shift, 25% action shift, and 5% missing for each of image, state, and action label.
+
+Run the full three-dataset, three-seed study with:
 
 ```bash
 python tools/run_real_dataset_study.py --skip-download --device cuda \
   --episodes 0 --frames 0 --epochs 10 --seeds 7 17 27 \
   --act-batch-size 256 --segment-length 16 \
-  --output runs/quality_ablation_v1_2_0
+  --output runs/mixed_modality_damage_v1_3_0
 ```
+
+The complete local reference run finished on 2026-09-25 with all 270 expected
+combinations (3 datasets x 6 ablations x 5 conditions x 3 seeds). The table
+below reports the mean test-MSE ratio relative to the same dataset, model, and
+seed's clean-training baseline; each entry averages 9 dataset-seed ratios.
+
+| Model | Image damaged | State damaged | Action damaged | Mixed three corruptions |
+|---|---:|---:|---:|---:|
+| ACT-Lite | 0.999x | 1.388x | 2.432x | 1.535x |
+| Quality-Input | 0.995x | 1.234x | 2.394x | 2.007x |
+| Quality-Weighted-Loss | 1.000x | 1.374x | 0.992x | 1.163x |
+| Quality-Full | 0.996x | 1.238x | **0.977x** | **1.144x** |
+| Quality-Shuffled | 1.004x | 1.449x | 2.463x | 1.538x |
+| Quality-Constant | 0.994x | 1.303x | 2.401x | 1.500x |
+
+The strongest and most consistent finding is that correctly aligned Oracle
+action-label quality prevents the large degradation caused by shifted or
+missing action labels. Observation-quality input reduces state-damage error in
+the aggregate, while image damage is nearly neutral under this offline metric.
+The generated evidence is in
+`runs/mixed_modality_damage_v1_3_0/{report.html,results.csv,results.json}`; the
+directory is intentionally ignored by Git because it also contains 270 model
+checkpoints. These results are offline prediction measurements, not robot
+rollout success rates.
 
 Each checkpoint is written atomically and records checkpoint/quality schema versions, model and configuration signatures, source version, Git commit, experiment signature, and the quality formula. Resume skips a run only when its manifest, checkpoint, model signature, experiment signature, and evaluation CSV files all agree.
 
@@ -145,7 +177,10 @@ Each checkpoint is written atomically and records checkpoint/quality schema vers
 
 Evaluation is performed on held-out samples with ground-truth actions. Sync2Act reports `action_mse`, `action_mae`, trajectory smoothness, jerk, P50/P95 inference latency, parameter count, and per-episode metrics. Smoothness and jerk are calculated inside each episode and then aggregated, so the final frame of one episode is never connected to the first frame of another.
 
-These are offline imitation metrics, not closed-loop robot success rates. The repository intentionally contains no precomputed benchmark results or trained models; reported numbers should come from the user's own dataset, split, seed, and hardware.
+These are offline imitation metrics, not closed-loop robot success rates. Git
+source checkouts intentionally omit generated runs and trained models; the
+reference numbers above are retained in this README while the full local
+evidence remains under the ignored `runs/` directory.
 
 ## Dataset download and storage
 

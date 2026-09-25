@@ -246,6 +246,63 @@ def frame_drop(
     )
 
 
+def modality_missing(
+    episode: Episode,
+    target: str,
+    probability: float = 1.0,
+    seed: int = 0,
+    camera_index: int | None = None,
+) -> Episode:
+    """Replace a selected modality with zeros and mark it fully unavailable.
+
+    This operator gives image, state, and action-label missingness identical semantics:
+    affected values are zero placeholders, the modality-specific missing mask is true,
+    and the corresponding quality is zero. A camera index may be supplied only for image
+    missingness; omitting it marks every synchronized camera as missing.
+    """
+    if target not in {"image", "state", "action"}:
+        raise ValueError("target must be image, state, or action")
+    if not 0 <= probability <= 1:
+        raise ValueError("probability must be in [0, 1]")
+    if target != "image" and camera_index is not None:
+        raise ValueError("camera_index is only valid for image missingness")
+
+    result = clone_episode(episode)
+    length = validate_episode(result)
+    ensure_modal_metadata(result)
+    generator = torch.Generator().manual_seed(seed)
+    missing = torch.rand(length, generator=generator) < probability
+    indices = missing.nonzero(as_tuple=False).flatten()
+    cameras = _camera_indices(result, camera_index) if target == "image" else []
+
+    if target == "image":
+        images = _image_views(result["observation.image"])
+        images[indices[:, None], cameras] = 0
+        result["image_missing_mask"][indices[:, None], cameras] = True
+        result["image_quality"][indices[:, None], cameras] = 0.0
+    elif target == "state":
+        result["observation.state"][indices] = 0
+        result["state_missing_mask"][indices] = True
+        result["state_quality"][indices] = 0.0
+    else:
+        result["action"][indices] = 0
+        result["action_label_missing_mask"][indices] = True
+        result["action_label_quality"][indices] = 0.0
+
+    return _record(
+        result,
+        "modality_missing",
+        seed,
+        {
+            "target": target,
+            "probability": probability,
+            "camera_indices": cameras,
+        },
+        indices,
+        missing_indices=indices,
+    )
+
+
 def action_noise(
     episode: Episode,
     mode: str = "gaussian",
@@ -381,6 +438,7 @@ def apply_corruption(episode: Episode, config: dict[str, Any]) -> Episode:
     functions = {
         "temporal_shift": temporal_shift,
         "frame_drop": frame_drop,
+        "modality_missing": modality_missing,
         "action_noise": action_noise,
         "state_anomaly": state_anomaly,
     }

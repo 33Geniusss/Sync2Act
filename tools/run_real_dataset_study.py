@@ -107,9 +107,9 @@ COLORS = {
 }
 CONDITION_ORDER = [
     "clean",
-    "mixed_temporal_state_shift2",
-    "mixed_temporal_action_shift2",
-    "mixed_action_delay2",
+    "mixed_image_damaged",
+    "mixed_state_damaged",
+    "mixed_action_damaged",
     "mixed_three_corruptions",
 ]
 
@@ -154,10 +154,20 @@ def _data_scales(episodes: list[dict]) -> tuple[float, float, float]:
 def corruption_conditions(episodes: list[dict], fps: float) -> list[dict]:
     """Focused mixed-quality conditions for the six-way quality ablation."""
     del episodes, fps
-    clean = {"name": "clean", "weight": 0.5, "config": None}
+    clean = {"name": "clean", "weight": 1.0, "config": None}
+    image_shift = {
+        "name": "image_shift2",
+        "weight": 1.0,
+        "config": {
+            "type": "temporal_shift",
+            "target": "image",
+            "shift": 2,
+            "boundary": "mask",
+        },
+    }
     state_shift = {
-        "name": "temporal_state_shift2",
-        "weight": 0.5,
+        "name": "state_shift2",
+        "weight": 1.0,
         "config": {
             "type": "temporal_shift",
             "target": "state",
@@ -166,8 +176,8 @@ def corruption_conditions(episodes: list[dict], fps: float) -> list[dict]:
         },
     }
     action_shift = {
-        "name": "temporal_action_shift2",
-        "weight": 0.5,
+        "name": "action_shift2",
+        "weight": 1.0,
         "config": {
             "type": "temporal_shift",
             "target": "action",
@@ -175,41 +185,73 @@ def corruption_conditions(episodes: list[dict], fps: float) -> list[dict]:
             "boundary": "mask",
         },
     }
-    action_delay = {
-        "name": "action_delay2",
-        "weight": 0.5,
+    image_missing = {
+        "name": "image_missing",
+        "weight": 1.0,
         "config": {
-            "type": "action_noise",
-            "mode": "delay",
-            "delay": 2,
-            "random_delay": False,
+            "type": "modality_missing",
+            "target": "image",
+            "probability": 1.0,
+        },
+    }
+    state_missing = {
+        "name": "state_missing",
+        "weight": 1.0,
+        "config": {
+            "type": "modality_missing",
+            "target": "state",
+            "probability": 1.0,
+        },
+    }
+    action_missing = {
+        "name": "action_missing",
+        "weight": 1.0,
+        "config": {
+            "type": "modality_missing",
+            "target": "action",
+            "probability": 1.0,
         },
     }
     return [
         {"name": "clean", "family": "clean", "components": None},
         {
-            "name": "mixed_temporal_state_shift2",
-            "family": "temporal_shift",
-            "components": [clean, state_shift],
+            "name": "mixed_image_damaged",
+            "family": "image_damage",
+            "components": [
+                {**clean, "weight": 0.50},
+                {**image_shift, "weight": 0.40},
+                {**image_missing, "weight": 0.10},
+            ],
         },
         {
-            "name": "mixed_temporal_action_shift2",
-            "family": "temporal_shift",
-            "components": [clean, action_shift],
+            "name": "mixed_state_damaged",
+            "family": "state_damage",
+            "components": [
+                {**clean, "weight": 0.50},
+                {**state_shift, "weight": 0.40},
+                {**state_missing, "weight": 0.10},
+            ],
         },
         {
-            "name": "mixed_action_delay2",
-            "family": "action_noise",
-            "components": [clean, action_delay],
+            "name": "mixed_action_damaged",
+            "family": "action_damage",
+            "components": [
+                {**clean, "weight": 0.50},
+                {**action_shift, "weight": 0.40},
+                {**action_missing, "weight": 0.10},
+            ],
         },
         {
             "name": "mixed_three_corruptions",
             "family": "mixed",
             "components": [
-                {**clean, "weight": 0.25},
-                {**state_shift, "weight": 0.25},
+                {**clean, "weight": 0.20},
+                {**image_shift, "weight": 0.20},
+                {**state_shift, "weight": 0.20},
                 {**action_shift, "weight": 0.25},
-                {**action_delay, "weight": 0.25},
+                {**image_missing, "weight": 0.05},
+                {**state_missing, "weight": 0.05},
+                {**action_missing, "weight": 0.05},
             ],
         },
     ]
@@ -540,7 +582,7 @@ code,pre{{background:#f5f7fb;padding:2px 5px}}pre{{padding:12px;overflow:auto}}
 <p class='notice'><strong>研究范围：</strong>这是{scope_label}上的离线模仿学习评估，不是机器人闭环 rollout 成功率。本轮使用 {len(seeds)} 个随机种子。不同数据集的 action 单位不同，因此跨数据集主要比较同一数据集、同一模型相对同 seed 干净训练基线的 MSE 比值。</p>
 <h2>数据集</h2><table><tr><th>Hugging Face 仓库</th><th>机器人</th><th>单一任务</th><th>相机数</th><th>源 Episodes</th><th>源 Frames</th><th>选用 Episodes</th><th>选用 Frames</th></tr>{dataset_rows}</table>
 <h2>实验协议</h2><p>{html.escape(protocol_text)}</p><details><summary>展开查看完整可复现配置</summary><pre>{html.escape(json.dumps(study, indent=2))}</pre></details>
-<h2>消融与损坏设计</h2><p>六组消融分别为 ACT-Lite、仅 observation quality 输入、仅 action-label quality 加权、完整 Quality-Aware ACT、打乱 quality 对照和恒定 quality 对照。重点条件为 temporal state shift、temporal action shift、action delay，以及三者混合；每种单项损坏训练集按片段混合 50% 干净与 50% 损坏数据，综合条件各占 25%。归一化统计量只由干净 Training Episodes 计算并在所有组合间固定。</p>
+<h2>消融与损坏设计</h2><p>六组消融分别为 ACT-Lite、仅 observation quality 输入、仅 action-label quality 加权、完整 Quality-Aware ACT、打乱 quality 对照和恒定 quality 对照。mixed_image_damaged、mixed_state_damaged 和 mixed_action_damaged 均包含 50% 干净片段、40% 对应模态的 2-frame temporal shift，以及 10% 对应模态完全缺失。mixed_three_corruptions 包含 20% 干净、20% image shift、20% state shift、25% action shift，以及 image/state/action missing 各 5%。归一化统计量只由干净 Training Episodes 计算并在所有组合间固定。</p>
 <h2>损坏影响</h2><p>图中是归一化测试 MSE；1.0× 表示同一数据集和模型的干净训练基线。下图先对三个数据集取平均，后面可展开查看每个数据集。</p>{_impact_svg(frame, condition_order)}<details><summary>展开查看三个数据集的独立曲线</summary>{dataset_charts}</details>
 <h2>自动汇总结论</h2><ul>{findings_html}</ul>
 <p class='notice'><strong>解读提醒：</strong>某些损坏条件的 MSE 可能低于 1.0×，这可能来自随机波动、优化路径差异或类似正则化的效果；应结合三个 seed 的均值和标准差解读，不能据此宣称损坏数据会提高真实机器人性能。</p>
@@ -640,7 +682,7 @@ def _experiment_signature(
 ) -> str:
     return _canonical_hash(
         {
-            "experiment_schema_version": 2,
+            "experiment_schema_version": 3,
             "quality_schema_version": QUALITY_SCHEMA_VERSION,
             "source_fingerprint": source_fingerprint,
             "dataset_repo": dataset_spec["repo_id"],
@@ -811,7 +853,7 @@ def run_study(args: argparse.Namespace) -> Path:
     ]
     study = {
         "name": "quality_aware_act_mixed_quality_ablation",
-        "experiment_schema_version": 2,
+        "experiment_schema_version": 3,
         "quality_schema_version": QUALITY_SCHEMA_VERSION,
         "source_fingerprint": source_fingerprint,
         "git_commit": (
@@ -1031,7 +1073,7 @@ def run_study(args: argparse.Namespace) -> Path:
                         "training_config": train_config,
                         "split": split,
                         "metrics": metrics,
-                        "experiment_schema_version": 2,
+                        "experiment_schema_version": 3,
                         "quality_schema_version": QUALITY_SCHEMA_VERSION,
                         "source_fingerprint": source_fingerprint,
                         "experiment_signature": signature,
@@ -1062,7 +1104,9 @@ def run_study(args: argparse.Namespace) -> Path:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--output", type=Path, default=Path("runs/quality_ablation_v1_2_0"))
+    result.add_argument(
+        "--output", type=Path, default=Path("runs/mixed_modality_damage_v1_3_0")
+    )
     result.add_argument("--datasets-root", type=Path, default=datasets_root())
     result.add_argument("--datasets", nargs="+", choices=[item["name"] for item in DATASETS])
     result.add_argument("--models", nargs="+", choices=MODELS)

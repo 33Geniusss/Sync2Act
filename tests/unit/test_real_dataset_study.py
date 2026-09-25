@@ -16,6 +16,51 @@ def _load_study_runner():
 study_runner = _load_study_runner()
 
 
+def test_requested_mixed_damage_condition_weights_and_missing_semantics():
+    conditions = {
+        item["name"]: item for item in study_runner.corruption_conditions([], 30.0)
+    }
+
+    assert list(conditions) == study_runner.CONDITION_ORDER
+    expected = {
+        "mixed_image_damaged": {
+            "clean": 0.50,
+            "image_shift2": 0.40,
+            "image_missing": 0.10,
+        },
+        "mixed_state_damaged": {
+            "clean": 0.50,
+            "state_shift2": 0.40,
+            "state_missing": 0.10,
+        },
+        "mixed_action_damaged": {
+            "clean": 0.50,
+            "action_shift2": 0.40,
+            "action_missing": 0.10,
+        },
+        "mixed_three_corruptions": {
+            "clean": 0.20,
+            "image_shift2": 0.20,
+            "state_shift2": 0.20,
+            "action_shift2": 0.25,
+            "image_missing": 0.05,
+            "state_missing": 0.05,
+            "action_missing": 0.05,
+        },
+    }
+    for name, weights in expected.items():
+        components = conditions[name]["components"]
+        assert {item["name"]: item["weight"] for item in components} == weights
+        assert sum(item["weight"] for item in components) == 1.0
+        for item in components:
+            if item["name"].endswith("_missing"):
+                assert item["config"] == {
+                    "type": "modality_missing",
+                    "target": item["name"].removesuffix("_missing"),
+                    "probability": 1.0,
+                }
+
+
 def test_bare_report_only_reuses_saved_study_configuration(
     tmp_path: Path, monkeypatch
 ) -> None:

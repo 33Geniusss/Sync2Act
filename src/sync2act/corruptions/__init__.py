@@ -3,6 +3,7 @@ from .ops import (
     action_noise,
     apply_corruption,
     frame_drop,
+    modality_missing,
     state_anomaly,
     temporal_shift,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "apply_corruption",
     "build_mixed_quality_dataset",
     "frame_drop",
+    "modality_missing",
     "state_anomaly",
     "temporal_shift",
     "transform_quality_annotations",

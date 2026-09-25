@@ -6,6 +6,7 @@ from sync2act.corruptions import (
     apply_corruption,
     build_mixed_quality_dataset,
     frame_drop,
+    modality_missing,
     state_anomaly,
     temporal_shift,
     transform_quality_annotations,
@@ -36,6 +37,7 @@ def test_corruptions_are_reproducible_and_non_mutating():
     configs = [
         {"type": "temporal_shift", "target": "image", "shift": -2, "boundary": "mask", "seed": 4},
         {"type": "frame_drop", "probability": 0.4, "replacement": "interpolation", "seed": 4},
+        {"type": "modality_missing", "target": "action", "probability": 0.4, "seed": 4},
         {"type": "action_noise", "mode": "gaussian", "sigma": 0.2, "seed": 4},
         {"type": "state_anomaly", "mode": "spike", "probability": 0.4, "seed": 4},
     ]
@@ -148,6 +150,45 @@ def test_camera_specific_drop_only_marks_selected_camera():
     assert dropped["image_missing_mask"][:, 1].all()
     assert dropped["image_quality"][:, 0].eq(1).all()
     assert dropped["image_quality"][:, 1].eq(0.25).all()
+
+
+@pytest.mark.parametrize(
+    ("target", "value_key", "quality_key", "missing_key"),
+    [
+        ("image", "observation.image", "image_quality", "image_missing_mask"),
+        ("state", "observation.state", "state_quality", "state_missing_mask"),
+        ("action", "action", "action_label_quality", "action_label_missing_mask"),
+    ],
+)
+def test_modality_missing_uses_zero_quality_and_matching_mask(
+    target, value_key, quality_key, missing_key
+):
+    episode = generate_demo_episodes(num_episodes=1, length=8)[0]
+    missing = modality_missing(episode, target=target, probability=1.0, seed=3)
+
+    assert missing[value_key].eq(0).all()
+    assert missing[quality_key].eq(0).all()
+    assert missing[missing_key].all()
+    assert missing["provenance"]["type"] == "modality_missing"
+    assert missing["provenance"]["parameters"]["target"] == target
+    assert missing["provenance"]["missing_indices"] == list(range(8))
+
+
+def test_camera_specific_modality_missing_preserves_other_camera():
+    episode = generate_demo_episodes(num_episodes=1, length=8)[0]
+    episode["observation.image"] = episode["observation.image"].unsqueeze(1).repeat(1, 2, 1, 1, 1)
+    original_first_camera = episode["observation.image"][:, 0].clone()
+
+    missing = modality_missing(
+        episode, target="image", probability=1.0, camera_index=1, seed=3
+    )
+
+    assert torch.equal(missing["observation.image"][:, 0], original_first_camera)
+    assert missing["observation.image"][:, 1].eq(0).all()
+    assert missing["image_quality"][:, 0].eq(1).all()
+    assert missing["image_quality"][:, 1].eq(0).all()
+    assert not missing["image_missing_mask"][:, 0].any()
+    assert missing["image_missing_mask"][:, 1].all()
 
 
 def test_mixed_quality_builder_and_annotation_controls():
