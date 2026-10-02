@@ -23,6 +23,7 @@ from sync2act.data.split import split_episode_indices
 from sync2act.evaluation import evaluate_policy
 from sync2act.paths import datasets_root
 from sync2act.policies import build_policy
+from sync2act.reporting.localization import english_text
 from sync2act.training import QUALITY_SCHEMA_VERSION, inspect_checkpoint, train_policy
 
 DATASETS = [
@@ -591,7 +592,16 @@ code,pre{{background:#f5f7fb;padding:2px 5px}}pre{{padding:12px;overflow:auto}}
 <h2>解读限制</h2><ul><li>验证和测试 Episodes 保持干净，仅训练 Episodes 含混合质量片段。</li><li>结果衡量 action 的离线预测误差，不是闭环任务成功率。</li><li>三个 seed 用于估计随机波动；更强统计结论仍需要更多 seeds 与置信区间。</li><li>图像会统一缩放，以控制显存和训练时间。</li><li>本轮使用由人工损坏过程给出的 Oracle quality；若 Oracle 对照有效，才适合继续开发自动质量估计器。</li></ul>
 </body></html>"""
     target = output_root / "report.html"
+    from sync2act.reporting.temporal import temporal_report_section
+
+    document = document.replace(
+        "<h2>自动汇总结论</h2>",
+        temporal_report_section(output_root) + "\n<h2>自动汇总结论</h2>",
+    )
     target.write_text(document, encoding="utf-8")
+    (output_root / "report_en.html").write_text(
+        english_text(document).replace("<html>", "<html lang='en'>"), encoding="utf-8"
+    )
     return target
 
 

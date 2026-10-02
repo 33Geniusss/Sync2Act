@@ -37,6 +37,7 @@ def load_local_lerobot_dataset(
     max_image_size: int = 128,
     episode_limit: int | None = None,
     frames_per_episode_limit: int | None = None,
+    episode_positions: list[int] | None = None,
 ) -> tuple[list[Episode], dict]:
     """Load a LeRobot v3 local repository into Sync2Act's episode contract."""
     root = Path(root).expanduser().resolve()
@@ -85,6 +86,15 @@ def load_local_lerobot_dataset(
         if episode_limit <= 0:
             raise ValueError("episode_limit must be positive")
         unique_source_episodes = unique_source_episodes[:episode_limit]
+    if episode_positions is not None:
+        if not episode_positions or len(set(episode_positions)) != len(episode_positions):
+            raise ValueError("episode_positions must be nonempty and unique")
+        if any(index < 0 or index >= len(unique_source_episodes) for index in episode_positions):
+            raise ValueError("episode_positions contains an out-of-range episode")
+        # Keep source order, exactly as loading all episodes then selecting them.
+        unique_source_episodes = [
+            unique_source_episodes[index] for index in sorted(episode_positions)
+        ]
     if frames_per_episode_limit is not None and frames_per_episode_limit <= 0:
         raise ValueError("frames_per_episode_limit must be positive")
     selected_positions: list[int] = []
@@ -242,6 +252,7 @@ def load_local_lerobot_dataset(
         "source_frames": source_frame_count,
         "episode_limit": episode_limit,
         "frames_per_episode_limit": frames_per_episode_limit,
+        "episode_positions": sorted(episode_positions) if episode_positions is not None else None,
         "state_dim": int(states.shape[1]),
         "action_dim": int(actions.shape[1]),
         "image_shape": [len(video_keys), channels, target_height, target_width],

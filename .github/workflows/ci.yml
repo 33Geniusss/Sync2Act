@@ -30,4 +30,5 @@ jobs:
 
       - run: pip install -e .[dev]
       - run: ruff check src tests
+      - run: python tools/check_documentation_languages.py
       - run: pytest

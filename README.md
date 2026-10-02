@@ -10,6 +10,22 @@ Sync2Act turns an episode-based robot dataset into controlled, reproducible expe
 
 ![Sync2Act Overview](assets/gui-overview.png)
 
+## Documentation and reports
+
+Every published Chinese document has an English counterpart. Both versions cover
+the same requirements, questions, formulas, results, and limitations.
+
+| Document | English | Chinese |
+|---|---|---|
+| Experiment report, including temporal ensembling | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.tex) | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.tex) |
+| Interview preparation: 84 questions | [English](SYNC2ACT_INTERVIEW_QA_EN.md) | [Chinese](SYNC2ACT_INTERVIEW_QA_ZH.md) |
+| Original implementation brief | [English](SYNC2ACT_CODEX_PROJECT_BRIEF_EN.md) | [Chinese](SYNC2ACT_CODEX_PROJECT_BRIEF.md) |
+
+The brief records original requirements, not a checklist of implemented features.
+See the [language policy](docs/LANGUAGE_POLICY.md) for regeneration commands and
+the language-pair check enforced by CI. Study HTML generators write both
+`report.html` (Chinese) and `report_en.html` (English) from identical result data.
+
 ## Research workflow
 
 ```text
@@ -176,6 +192,48 @@ Each checkpoint is written atomically and records checkpoint/quality schema vers
 ## Offline evaluation
 
 Evaluation is performed on held-out samples with ground-truth actions. Sync2Act reports `action_mse`, `action_mae`, trajectory smoothness, jerk, P50/P95 inference latency, parameter count, and per-episode metrics. Smoothness and jerk are calculated inside each episode and then aggregated, so the final frame of one episode is never connected to the first frame of another.
+
+The default evaluator selects the first action of each predicted chunk. Pass
+`temporal_decay=0.7` to `evaluate_policy()` to fuse overlapping predictions for
+the same target step, using only chunks starting at or before that step. History
+is isolated by episode. The returned metrics then describe the ensemble, with
+the paired first-step metrics under `first_step`. Set `save_action_chunks=True`
+and `output_dir` to retain complete chunks in original action units for auditing.
+
+To reevaluate the existing 270 checkpoints without retraining:
+
+```bash
+python tools/evaluate_temporal_study.py --device cuda --decay 0.7
+# Rebuild the supplement from matching, completed evaluations:
+python tools/evaluate_temporal_study.py --device cuda --decay 0.7 --report-only
+```
+
+This requires the local study checkpoints and original datasets. The runner
+reuses saved splits, camera preprocessing, and normalization; checks each
+recomputed first-step prediction against the original CSV; and records checkpoint
+hashes, source fingerprints, full chunks, paired predictions, and per-episode
+metrics under `runs/mixed_modality_damage_v1_3_0/temporal_ensemble/`. It only
+converts selected test episodes to images and caches them for repeated evaluation.
+Decay 0.7 is fixed before evaluation, not selected on test results. The supplement
+is included in both study HTML languages and the Chinese report's LaTeX source.
+Run `python tools/build_english_report.py` to refresh its English counterpart,
+then compile both sources with XeLaTeX to refresh the PDFs. The new overall-results plot uses
+the same damaged/clean-training normalization as the original plot, with both
+numerator and denominator evaluated using temporal ensembling. Separate MSE
+comparison tables show the change from first-step to ensemble evaluation.
+Offline fusion timings are not real-time controller latency measurements.
+
+The 2026-10-01 reevaluation completed all 270 pairs, with first-step predictions
+matching the historical CSVs exactly. At fixed decay 0.7, Quality-Full's ensemble
+damaged/clean-training MSE ratios are **1.0022 / 1.1360 / 1.0002 / 1.0970** for
+Image / State / Action / Mixed. The mean per-run ensemble/first-step MSE change
+was **+21.20%**. A lower damaged/clean ratio does not imply lower absolute MSE,
+because the clean-training denominator also changes. The report now focuses
+on the six-model overall-results plot and before/after MSE comparisons.
+Plot data is in `temporal_ensemble/relative_mse_by_model_condition.csv`; all
+dataset/model/condition comparisons are in `mse_by_dataset_model_condition.csv`,
+and individual paired MSEs are in `mse_per_run.csv`. The default remains
+first-step evaluation.
 
 These are offline imitation metrics, not closed-loop robot success rates. Git
 source checkouts intentionally omit generated runs and trained models; the

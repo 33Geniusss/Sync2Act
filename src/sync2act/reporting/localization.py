@@ -1,0 +1,135 @@
+"""English counterparts for the Chinese study-report templates.
+
+Numbers and markup are preserved. Untranslated Chinese fails explicitly instead
+of silently publishing a partly translated report. Longer phrases match first.
+"""
+
+import re
+
+TRANSLATIONS = {
+    "已完成": "Completed",
+    "全部完成：": "All complete: ",
+    "个训练组合": "training combinations",
+    "：跨三个数据集平均后，相对 MSE 最高的损坏为 ": ": averaged across three datasets, the largest relative MSE occurs under ",
+    "（干净基线的 ": " (relative to clean: ",
+    "所有损坏条件的总体均值为 ": "the overall mean across damaged conditions is ",
+    "完整 Quality-Aware ACT 在 ": "Full Quality-Aware ACT achieves lower absolute MSE in ",
+    "个与 ACT-Lite 成对的损坏实验中取得更低的绝对 MSE，但按各自同 seed 干净基线归一化后仅在 ": "damaged experiments paired with ACT-Lite, and lower normalized MSE relative to each model's same-seed clean baseline in ",
+    "个实验中更稳健，因此不能宣称它对所有损坏都更好。": "experiments. It is therefore not better under every corruption.",
+    "完整 Quality-Aware ACT 相对": "Full Quality-Aware ACT versus ",
+    "打乱 quality": "shuffled quality",
+    "恒定 quality": "constant quality",
+    "对照在 ": "control: ",
+    "个成对损坏实验中取得更低 MSE。": "paired damaged experiments have lower MSE for Full.",
+    "：在全部 3 数据集 × 3 seeds 上都恶化的条件为 ": ": conditions that degrade across all three datasets and three seeds: ",
+    "无": "none",
+    "累计 GPU 模型训练时间为 ": "Recorded training wall time on the GPU path totals ",
+    "小时。": "hours.",
+    "结果尚未完整。": "Results are not yet complete.",
+    "完整数据集": "the full dataset",
+    "受控子集": "a controlled subset",
+    "每个数据集使用": "Each dataset uses ",
+    "，按 Episode 固定划分为 ": ", with a fixed episode-level split: ",
+    "% 训练、": "% training, ",
+    "% 验证和 ": "% validation, and ",
+    "% 测试。仅训练 Episodes 按实验条件构造混合质量片段；验证集和测试集始终保持干净。六组消融均训练 ": "% testing. Only training episodes contain mixed-quality segments; validation and test remain clean. All six ablations train for ",
+    "epochs，图像长边缩放至 ": "epochs; the image longest edge is resized to ",
+    "px，在 ": "px, running on ",
+    "上运行。独立随机种子为 ": ". Training seeds: ",
+    "Sync2Act Quality-Aware ACT 六组消融研究": "Sync2Act Quality-Aware ACT: six-variant ablation study",
+    "生成时间": "Generated at",
+    "研究范围：": "Scope: ",
+    "这是": "This is offline imitation-learning evaluation on ",
+    "上的离线模仿学习评估，不是机器人闭环 rollout 成功率。本轮使用 ": ", not closed-loop robot rollout success. This study uses ",
+    "个随机种子。不同数据集的 action 单位不同，因此跨数据集主要比较同一数据集、同一模型相对同 seed 干净训练基线的 MSE 比值。": "seeds. Action units differ across datasets, so cross-dataset comparisons use MSE ratios relative to each dataset/model's same-seed clean-training baseline.",
+    "Hugging Face 仓库": "Hugging Face repository",
+    "机器人": "Robot",
+    "单一任务": "Single task",
+    "相机数": "Cameras",
+    "源 Episodes": "Source episodes",
+    "源 Frames": "Source frames",
+    "选用 Episodes": "Selected episodes",
+    "选用 Frames": "Selected frames",
+    "实验协议": "Experiment protocol",
+    "展开查看完整可复现配置": "Expand the complete reproducible configuration",
+    "消融与损坏设计": "Ablation and corruption design",
+    "六组消融分别为 ACT-Lite、仅 observation quality 输入、仅 action-label quality 加权、完整 Quality-Aware ACT、打乱 quality 对照和恒定 quality 对照。mixed_image_damaged、mixed_state_damaged 和 mixed_action_damaged 均包含 50% 干净片段、40% 对应模态的 2-frame temporal shift，以及 10% 对应模态完全缺失。mixed_three_corruptions 包含 20% 干净、20% image shift、20% state shift、25% action shift，以及 image/state/action missing 各 5%。归一化统计量只由干净 Training Episodes 计算并在所有组合间固定。": "The six variants are ACT-Lite, observation-quality input only, action-label weighting only, full Quality-Aware ACT, shuffled-quality control, and constant-quality control. Each single-modality condition contains 50% clean segments, 40% two-frame shift, and 10% complete missingness for that modality. The mixed condition contains 20% clean, 20% image shift, 20% state shift, 25% action shift, and 5% missingness for each modality. Normalization is computed only from clean training episodes and frozen across combinations.",
+    "损坏影响": "Corruption impact",
+    "图中是归一化测试 MSE；1.0× 表示同一数据集和模型的干净训练基线。下图先对三个数据集取平均，后面可展开查看每个数据集。": "The plot shows normalized test MSE; 1.0x denotes the dataset/model's clean-training baseline. The first plot averages across three datasets; expand below for individual datasets.",
+    "展开查看三个数据集的独立曲线": "Expand separate curves for the three datasets",
+    "自动汇总结论": "Automatically summarized findings",
+    "解读提醒：": "Interpretation: ",
+    "某些损坏条件的 MSE 可能低于 1.0×，这可能来自随机波动、优化路径差异或类似正则化的效果；应结合三个 seed 的均值和标准差解读，不能据此宣称损坏数据会提高真实机器人性能。": "Ratios below 1.0x may reflect random variation, optimization differences, or regularization-like effects. Interpret means together with standard deviations across three seeds; do not conclude that damaged data improves real-robot performance.",
+    "跨 Seed 统计": "Across-seed statistics",
+    "测试 MSE（均值 ± 标准差）": "Test MSE (mean ± standard deviation)",
+    "MSE / 同 seed 干净基线": "MSE / same-seed clean baseline",
+    "全部实测结果": "All measured results",
+    "测试 MSE": "Test MSE",
+    "测试 MAE": "Test MAE",
+    "训练秒数": "Training seconds",
+    "解读限制": "Limitations",
+    "验证和测试 Episodes 保持干净，仅训练 Episodes 含混合质量片段。": "Validation/test episodes remain clean; only training episodes contain mixed-quality segments.",
+    "结果衡量 action 的离线预测误差，不是闭环任务成功率。": "Results measure offline action prediction error, not closed-loop task success.",
+    "三个 seed 用于估计随机波动；更强统计结论仍需要更多 seeds 与置信区间。": "Three seeds provide variability estimates; stronger conclusions require more seeds and confidence intervals.",
+    "图像会统一缩放，以控制显存和训练时间。": "Images are resized consistently to control memory use and training time.",
+    "本轮使用由人工损坏过程给出的 Oracle quality；若 Oracle 对照有效，才适合继续开发自动质量估计器。": "This study uses Oracle quality from injected faults. Effective Oracle controls motivate further work on automatic quality estimators.",
+    "时间集成后的总体结果与 MSE 变化": "Overall results with temporal ensembling and MSE changes",
+    "时间集成后的总体结果": "Overall results with temporal ensembling",
+    "时间集成后的平均相对 MSE": "Mean relative MSE with temporal ensembling",
+    "平均相对 MSE R（时间集成）": "Mean relative MSE R (ensemble)",
+    "集成前后的 MSE 变化": "MSE before and after ensembling",
+    "各训练条件下，MSE 相对未集成的变化（%）": "MSE change from first-step evaluation by training condition (%)",
+    "未集成与集成后的实际 MSE": "Actual MSE before and after ensembling",
+    "展开全部数据集 × 模型 × 训练条件的 MSE 对照（每行三个 seeds）": "Expand all dataset / model / condition MSE comparisons (three seeds per row)",
+    "个 checkpoint 和原测试 episodes，不重新训练；decay=": "checkpoints and the original test episodes, without retraining; decay=",
+    "在评估前固定。": "was fixed before evaluation. ",
+    "只融合起点不晚于当前时刻的预测，并在每条 episode 边界重置历史。": "Only predictions from chunks starting at or before the target time are fused; history resets at episode boundaries. ",
+    "原第一步预测的历史核对为": "Historical first-step prediction audits passed:",
+    "通过。": "passed. ",
+    "复用": "Reuse",
+    "图的计算口径与第 6 节原图相同：先在每个数据集、模型、seed 内，用该条件的测试 MSE 除以同一模型同一 seed 的干净训练测试 MSE，再平均 9 个比值。": "Normalization matches the original Section 6 plot: within each dataset/model/seed, divide the condition's test MSE by that model and seed's clean-training test MSE, then average nine ratios. ",
+    "新图的分子和分母都使用时间集成后的 MSE；横轴、六模型配色和纵轴范围与原图一致。": "Both numerator and denominator use ensembled MSE. Categories, six-model colors, and the vertical range match the original plot.",
+    "下表逐运行计算 100×(集成后 MSE / 未集成 MSE − 1)，再对 3 数据集 × 3 seeds 取平均。": "Compute 100 times (ensemble MSE / first-step MSE - 1) per run, then average over three datasets and three seeds. ",
+    "负数表示 MSE 降低，正数表示 MSE 增加；不跨机器人直接平均原始 MSE。": "Negative values mean lower MSE; positive values mean higher MSE. Raw MSE is not averaged across robots.",
+    "下表在同一数据集、同一模型内对五个训练条件和三个 seeds 的 15 次运行取平均。": "Each row below averages 15 runs within one dataset/model: five training conditions and three seeds. ",
+    "MSE 差值 = 集成后均值 − 未集成均值；变化 (%) = 100×(集成后均值 / 未集成均值 − 1)。": "MSE difference = ensemble mean - first-step mean; change (%) = 100 times (ensemble mean / first-step mean - 1). ",
+    r"MSE 差值 = 集成后均值 − 未集成均值；变化 (\%) = 100×(集成后均值 / 未集成均值 − 1)。": r"MSE difference = ensemble mean - first-step mean; change (\%) = 100 times (ensemble mean / first-step mean - 1). ",
+    "此处的均值之比不同于上表逐运行百分比的均值。": "This ratio of means differs from the mean of per-run percentages above.",
+    "组逐运行 MSE 相对变化的平均值为": "runs: mean per-run relative MSE change =",
+    "相对退化曲线下降不等于实际 MSE 下降：时间集成也会改变作为分母的干净训练基线。": "A lower relative-degradation curve does not imply lower actual MSE: ensembling also changes the clean-training denominator. ",
+    "判断是否更准确，应同时查看未集成与集成后的实际 MSE。结果仅限离线动作预测。": "Assess accuracy using actual first-step and ensemble MSE together. These results concern offline action prediction only.",
+    "图表数据：": "Plot data: ",
+    "逐运行 MSE：": "Per-run MSE: ",
+    "完整条件对照：": "Full condition comparison: ",
+    "每点平均 3 数据集与 3 seeds 的 9 个比值；虚线为时间集成后的干净训练基准。": "Each point averages nine ratios (three datasets, three seeds); the dashed line is the ensembled clean-training baseline.",
+    "新图的数值。此表是相对干净训练的退化程度，不是时间集成相对未集成的变化。": "Values from the new plot: degradation relative to clean training, not ensemble-versus-first-step changes.",
+    "实际 MSE 的平均配对变化百分比。每格 9 次运行；正数表示误差增加。": "Mean paired MSE changes. Each cell averages nine runs; positive values mean increased error.",
+    "同一数据集内的实际 MSE 对照。每行平均五条件、三 seeds，共 15 次运行。": "Within-dataset actual MSE comparison. Each row averages five conditions and three seeds (15 runs).",
+    "完整条件对照见 HTML 可展开表格及": "Full condition comparisons are in the expandable HTML table and",
+    "复现：": "Reproduce: ",
+    "时间集成 MSE": "Temporal-ensemble MSE",
+    "未集成 MSE": "First-step MSE",
+    "集成后 MSE": "Ensemble MSE",
+    "MSE 差值": "MSE difference",
+    "平均 MSE 比值": "Mean MSE ratio",
+    "模型": "Model",
+    "数据集": "Dataset",
+    "训练条件": "Training condition",
+    "变化": "Change",
+}
+
+
+def english_text(text: str, extra: dict[str, str] | None = None) -> str:
+    """Translate a known report template without changing numeric cells."""
+    mapping = TRANSLATIONS | (extra or {})
+    pattern = "|".join(re.escape(key) for key in sorted(mapping, key=len, reverse=True))
+    translated = re.sub(pattern, lambda match: mapping[match.group()], text)
+    translated = translated.translate(
+        str.maketrans(
+            {"。": ". ", "；": "; ", "，": ", ", "：": ": ", "（": "(", "）": ")", "、": ", "}
+        )
+    )
+    remaining = re.search(r"[^\n<>]*[\u4e00-\u9fff][^\n<>]*", translated)
+    if remaining:
+        raise ValueError(f"Missing English report translation: {remaining.group()[:240]}")
+    return translated.replace("lang='zh-CN'", "lang='en'")

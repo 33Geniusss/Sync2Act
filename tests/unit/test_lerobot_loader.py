@@ -5,6 +5,7 @@ import json
 import av
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from sync2act.data.lerobot import load_local_lerobot_dataset
@@ -91,3 +92,17 @@ def test_load_local_lerobot_dataset_builds_episode_contract(tmp_path):
     assert limited[0]["action"].shape[0] == 1
     assert limited_metadata["episodes"] == 1
     assert limited_metadata["frames"] == 1
+
+    selected, selected_metadata = load_local_lerobot_dataset(
+        tmp_path, max_image_size=4, episode_positions=[1]
+    )
+    assert len(selected) == 1
+    assert selected_metadata["source_episodes"] == 2
+    assert selected_metadata["frames"] == 2
+    for key in ["observation.image", "observation.state", "action", "timestamp"]:
+        assert torch.equal(selected[0][key], episodes[1][key])
+    reordered, _ = load_local_lerobot_dataset(tmp_path, max_image_size=4, episode_positions=[1, 0])
+    assert torch.equal(reordered[0]["observation.image"], episodes[0]["observation.image"])
+    for positions in [[], [0, 0], [-1], [2]]:
+        with pytest.raises(ValueError, match="episode_positions"):
+            load_local_lerobot_dataset(tmp_path, episode_positions=positions)

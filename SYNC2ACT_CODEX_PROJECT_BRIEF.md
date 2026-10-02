@@ -1,5 +1,9 @@
 # Sync2Act 项目实施任务书（直接交给 Codex）
 
+中文 | [English version](SYNC2ACT_CODEX_PROJECT_BRIEF_EN.md)
+
+本文件是原始实施任务书，不代表所有要求都已实现。当前功能与实测证据以 [README](README.md) 为准。
+
 ## 你的任务
 
 请在当前工作区从零设计并实现一个可公开发布到 GitHub 的完整项目：**Sync2Act**。
