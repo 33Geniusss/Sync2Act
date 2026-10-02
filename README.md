@@ -13,15 +13,12 @@ Sync2Act turns an episode-based robot dataset into controlled, reproducible expe
 ## Documentation and reports
 
 Every published Chinese document has an English counterpart. Both versions cover
-the same requirements, questions, formulas, results, and limitations.
+the same experiment protocols, formulas, results, and limitations.
 
 | Document | English | Chinese |
 |---|---|---|
 | Experiment report, including temporal ensembling | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.tex) | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.tex) |
-| Interview preparation: 84 questions | [English](SYNC2ACT_INTERVIEW_QA_EN.md) | [Chinese](SYNC2ACT_INTERVIEW_QA_ZH.md) |
-| Original implementation brief | [English](SYNC2ACT_CODEX_PROJECT_BRIEF_EN.md) | [Chinese](SYNC2ACT_CODEX_PROJECT_BRIEF.md) |
 
-The brief records original requirements, not a checklist of implemented features.
 See the [language policy](docs/LANGUAGE_POLICY.md) for regeneration commands and
 the language-pair check enforced by CI. Study HTML generators write both
 `report.html` (Chinese) and `report_en.html` (English) from identical result data.

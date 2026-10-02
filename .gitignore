@@ -21,3 +21,9 @@ reports/*.html
 reports/*.json
 reports/*.csv
 !reports/.gitkeep
+
+# Local interview preparation and original development briefs
+/SYNC2ACT_INTERVIEW_QA_ZH.md
+/SYNC2ACT_INTERVIEW_QA_EN.md
+/SYNC2ACT_CODEX_PROJECT_BRIEF.md
+/SYNC2ACT_CODEX_PROJECT_BRIEF_EN.md

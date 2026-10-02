@@ -30,15 +30,9 @@ def main() -> None:
         if path.is_file() and path.suffix != ".pdf":
             if chinese.search(path.read_text(encoding="utf-8")):
                 errors.append(f"Untranslated Chinese in English counterpart: {english}")
-    expected = {f"{i:02d}" for i in range(1, 85)}
-    for name in ("SYNC2ACT_INTERVIEW_QA_ZH.md", "SYNC2ACT_INTERVIEW_QA_EN.md"):
-        text = (root / name).read_text(encoding="utf-8")
-        questions = re.findall(r"^\*\*Q(\d{2})\D", text, flags=re.M)
-        if len(questions) != 84 or set(questions) != expected:
-            errors.append(f"Expected exactly Q01-Q84 in {name}")
     if errors:
         raise SystemExit("\n".join(errors))
-    print(f"Language audit passed: {len(pairs)} document pairs; Q01-Q84 in both languages.")
+    print(f"Language audit passed: {len(pairs)} document pairs.")
 
 
 if __name__ == "__main__":

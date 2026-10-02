@@ -2,9 +2,7 @@
 
 Every Chinese document published in this repository must have a corresponding English version. English is the main README language. Pairings are recorded in [language_pairs.json](language_pairs.json); the README links both versions.
 
-When updating a Chinese document, update its English counterpart in the same commit. Keep question/section coverage, formulas, numeric results, and evidence boundaries aligned. A short English summary does not replace the full counterpart. Source code and machine-readable metric names do not need duplicate files; Chinese report templates have English translations in the same implementation.
-
-The project brief describes original requirements, not a claim that every requested feature is implemented. Interview answers describe evidence and limitations and must not invent personal contributions.
+When updating a Chinese document, update its English counterpart in the same commit. Keep section coverage, formulas, numeric results, and evidence boundaries aligned. A short English summary does not replace the full counterpart. Source code and machine-readable metric names do not need duplicate files; Chinese report templates have English translations in the same implementation.
 
 ## Generated reports
 
@@ -34,4 +32,4 @@ Use a TeX installation with XeLaTeX, CTeX, PGFPlots, and the packages declared b
 python tools/check_documentation_languages.py
 ```
 
-CI runs this check. It scans tracked Markdown/LaTeX/HTML documents for Chinese text, requires a registered English counterpart, verifies both files are tracked, checks English counterparts for untranslated Chinese, and verifies all 84 interview question IDs. PDF pairs are checked for tracked-file presence; numeric parity and visual layout need the separate report review above. Runtime datasets, checkpoints, caches, and large per-frame predictions remain ignored.
+CI runs this check. It scans tracked Markdown/LaTeX/HTML documents for Chinese text, requires a registered English counterpart, verifies both files are tracked, and checks English counterparts for untranslated Chinese. PDF pairs are checked for tracked-file presence; numeric parity and visual layout need the separate report review above. Runtime datasets, checkpoints, caches, and large per-frame predictions remain ignored.
