@@ -201,7 +201,7 @@ To reevaluate the existing 270 checkpoints without retraining:
 
 ```bash
 python tools/evaluate_temporal_study.py --device cuda --decay 0.7
-# Rebuild the supplement from matching, completed evaluations:
+# Rebuild the paired evaluation report from matching, completed evaluations:
 python tools/evaluate_temporal_study.py --device cuda --decay 0.7 --report-only
 ```
 
@@ -211,11 +211,11 @@ recomputed first-step prediction against the original CSV; and records checkpoin
 hashes, source fingerprints, full chunks, paired predictions, and per-episode
 metrics under `runs/mixed_modality_damage_v1_3_0/temporal_ensemble/`. It only
 converts selected test episodes to images and caches them for repeated evaluation.
-Decay 0.7 is fixed before evaluation, not selected on test results. The supplement
+Decay 0.7 is fixed before evaluation, not selected on test results. The paired evaluation report
 is included in both study HTML languages and the Chinese report's LaTeX source.
 Run `python tools/build_english_report.py` to refresh its English counterpart,
-then compile both sources with XeLaTeX to refresh the PDFs. The new overall-results plot uses
-the same damaged/clean-training normalization as the original plot, with both
+then compile both sources with XeLaTeX to refresh the PDFs. The ensemble overall-results plot uses
+the same damaged/clean-training normalization as the first-step plot, with both
 numerator and denominator evaluated using temporal ensembling. Separate MSE
 comparison tables show the change from first-step to ensemble evaluation.
 Offline fusion timings are not real-time controller latency measurements.

@@ -218,14 +218,14 @@ def write_temporal_report(study_root: Path, frame: pd.DataFrame, protocol: dict)
     absolute_table = display_comparison(absolute)
     full_table = display_comparison(tables["mse_by_dataset_model_condition"])
     method = (
-        f"复用 {n} 个 checkpoint 和原测试 episodes，不重新训练；decay={decay:g} 在评估前固定。"
+        f"两种评估方式使用同一组 {n} 个 checkpoint、测试 episodes 和归一化统计量；decay={decay:g} 在评估前固定。"
         "只融合起点不晚于当前时刻的预测，并在每条 episode 边界重置历史。"
-        f"原第一步预测的历史核对为 {protocol['baseline_audits_passed']}/{n} 通过。"
+        f"第一步预测一致性核对为 {protocol['baseline_audits_passed']}/{n} 通过。"
     )
     normalization = (
-        "图的计算口径与第 6 节原图相同：先在每个数据集、模型、seed 内，"
+        "两种评估方式采用相同的归一化规则：先在每个数据集、模型、seed 内，"
         "用该条件的测试 MSE 除以同一模型同一 seed 的干净训练测试 MSE，再平均 9 个比值。"
-        "新图的分子和分母都使用时间集成后的 MSE；横轴、六模型配色和纵轴范围与原图一致。"
+        "时间集成曲线的分子和分母均使用集成后的 MSE；两种方式的横轴、六模型配色和纵轴范围一致。"
     )
     change_note = (
         "下表逐运行计算 100×(集成后 MSE / 未集成 MSE − 1)，再对 3 数据集 × 3 seeds 取平均。"
@@ -322,7 +322,7 @@ def write_temporal_report(study_root: Path, frame: pd.DataFrame, protocol: dict)
             + r"\\"
         )
     tex += [
-        r"\bottomrule\end{tabular}\caption{新图的数值。此表是相对干净训练的退化程度，不是时间集成相对未集成的变化。}\end{table}",
+        r"\bottomrule\end{tabular}\caption{时间集成的平均 MSE 比值，衡量相对干净训练的退化程度。集成前后的实际误差变化见配对比较。}\end{table}",
         r"\clearpage\subsection{集成前后的 MSE 变化}",
         r"\begingroup\small\renewcommand{\arraystretch}{1.08}\setlength{\intextsep}{8pt}",
         change_note.replace("%", r"\%"),
@@ -369,9 +369,9 @@ def write_temporal_report(study_root: Path, frame: pd.DataFrame, protocol: dict)
         content = re.sub(r"(?:\\clearpage\s*)+(?=\\section\{按故障模态解读\})", "", content)
         content = content.replace(anchor, block + r"\clearpage" + "\n" + anchor)
         content = re.sub(
-            r"\{\\small\\color\{ink\}\\textbf\{时间集成补充：\}.*?\\par\}",
+            r"\{\\small\\color\{ink\}\\textbf\{时间集成评估：\}.*?\\par\}",
             lambda _: (
-                r"{\small\color{ink}\textbf{时间集成补充：}新增同口径的总体结果曲线，并列出集成前后的实际 MSE 和变化百分比。相对退化曲线与实际误差变化分开解读。\par}"
+                r"{\small\color{ink}\textbf{时间集成评估：}在同一模型与测试集上比较两种动作预测方式，分别报告相对干净训练的 MSE 比值和集成前后的实际 MSE 变化。\par}"
             ),
             content,
             flags=re.S,

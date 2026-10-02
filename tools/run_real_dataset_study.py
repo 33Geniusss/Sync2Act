@@ -584,8 +584,8 @@ code,pre{{background:#f5f7fb;padding:2px 5px}}pre{{padding:12px;overflow:auto}}
 <h2>数据集</h2><table><tr><th>Hugging Face 仓库</th><th>机器人</th><th>单一任务</th><th>相机数</th><th>源 Episodes</th><th>源 Frames</th><th>选用 Episodes</th><th>选用 Frames</th></tr>{dataset_rows}</table>
 <h2>实验协议</h2><p>{html.escape(protocol_text)}</p><details><summary>展开查看完整可复现配置</summary><pre>{html.escape(json.dumps(study, indent=2))}</pre></details>
 <h2>消融与损坏设计</h2><p>六组消融分别为 ACT-Lite、仅 observation quality 输入、仅 action-label quality 加权、完整 Quality-Aware ACT、打乱 quality 对照和恒定 quality 对照。mixed_image_damaged、mixed_state_damaged 和 mixed_action_damaged 均包含 50% 干净片段、40% 对应模态的 2-frame temporal shift，以及 10% 对应模态完全缺失。mixed_three_corruptions 包含 20% 干净、20% image shift、20% state shift、25% action shift，以及 image/state/action missing 各 5%。归一化统计量只由干净 Training Episodes 计算并在所有组合间固定。</p>
-<h2>损坏影响</h2><p>图中是归一化测试 MSE；1.0× 表示同一数据集和模型的干净训练基线。下图先对三个数据集取平均，后面可展开查看每个数据集。</p>{_impact_svg(frame, condition_order)}<details><summary>展开查看三个数据集的独立曲线</summary>{dataset_charts}</details>
-<h2>自动汇总结论</h2><ul>{findings_html}</ul>
+<h2>第一步预测的总体结果</h2><p>图中是归一化测试 MSE；1.0× 表示同一数据集和模型的干净训练基线。下图先对三个数据集取平均，后面可展开查看每个数据集。</p>{_impact_svg(frame, condition_order)}<details><summary>展开查看三个数据集的独立曲线</summary>{dataset_charts}</details>
+<h2>自动汇总结论</h2><p>以下消融结论采用第一步预测指标；两种评估方式的配对结果见时间集成结果表。</p><ul>{findings_html}</ul>
 <p class='notice'><strong>解读提醒：</strong>某些损坏条件的 MSE 可能低于 1.0×，这可能来自随机波动、优化路径差异或类似正则化的效果；应结合三个 seed 的均值和标准差解读，不能据此宣称损坏数据会提高真实机器人性能。</p>
 <h2>跨 Seed 统计</h2><div class='scroll'><table><tr><th>数据集</th><th>模型</th><th>训练条件</th><th>Seeds</th><th>测试 MSE（均值 ± 标准差）</th><th>MSE / 同 seed 干净基线</th></tr>{summary_rows}</table></div>
 <h2>全部实测结果</h2><div class='scroll'><table><tr><th>数据集</th><th>模型</th><th>训练条件</th><th>Seed</th><th>测试 MSE</th><th>测试 MAE</th><th>MSE / 同 seed 干净基线</th><th>训练秒数</th></tr>{result_rows}</table></div>

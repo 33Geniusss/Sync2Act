@@ -62,17 +62,17 @@
 完成状态 & \good{270 / 270 组成功完成并通过完整性审计}\\
 训练范围 & 完整 episode、完整 frame、全部相机；仅训练集损坏\\
 核心指标 & 干净测试集 action MSE，以及相对同模型同 seed 干净基线的 MSE 比值\\
-时间集成 & 复用已有 checkpoint，增加因果时间集成与第一步预测的配对评估\\
-更新日期 & 原实验：2026-09-25；补充评估：2026-10-01
+评估方式 & 同一模型、同一测试集上的第一步预测与因果时间集成配对评估\\
+报告日期 & 2026-10-02
 \end{tabularx}
 \end{tcolorbox}
 
 \vfill
 {\large\color{ink}\bfseries 结论预览}\par
 \vspace{2mm}
-{\color{ink}当 action 标签发生错位或缺失时，正确对齐的 Oracle action-label quality 几乎消除了平均退化：Quality-Full 的相对 MSE 为 $0.977\times$，而 ACT-Lite 为 $2.432\times$。在综合损坏下，Quality-Full 将平均相对 MSE 从 $1.535\times$ 降至 $1.144\times$。state quality 输入也有帮助，但 image quality 在当前离线指标上没有形成清晰收益。\par}
+{\color{ink}在第一步预测评估中，当 action 标签发生错位或缺失时，正确对齐的 Oracle action-label quality 几乎消除了平均退化：Quality-Full 的相对 MSE 为 $0.977\times$，而 ACT-Lite 为 $2.432\times$。在综合损坏下，Quality-Full 将平均相对 MSE 从 $1.535\times$ 降至 $1.144\times$。state quality 输入也有帮助，但 image quality 在当前离线指标上没有形成清晰收益。\par}
 \vspace{2mm}
-{\small\color{ink}\textbf{时间集成补充：}新增同口径的总体结果曲线，并列出集成前后的实际 MSE 和变化百分比。相对退化曲线与实际误差变化分开解读。\par}
+{\small\color{ink}\textbf{时间集成评估：}在同一模型与测试集上比较两种动作预测方式，分别报告相对干净训练的 MSE 比值和集成前后的实际 MSE 变化。\par}
 \vspace{6mm}
 {\small\color{muted}实验输出：\code{runs/mixed\_modality\_damage\_v1\_3\_0} \hfill Sync2Act}
 \end{titlepage}
@@ -84,7 +84,7 @@
 
 实验中的 quality 是由已知合成损坏过程直接给出的 \textbf{Oracle quality}。它表示已知故障来源的元数据，分数是启发式映射，不是经过校准的正确概率或严格证明的性能上界，也不是部署时自动获得的传感器信号。所有结果均为干净测试集上的\textbf{离线动作预测}；MSE 与 MAE 不能替代真实机器人或仿真器中的闭环成功率、回报和安全失败率。
 
-原始消融结果采用每次预测动作块的第一步。第 6 节同时给出时间集成后的同口径总体结果图，并单独列出未集成与集成后的实际 MSE 及变化百分比。新图以时间集成后的干净训练结果为分母；实际误差变化表以未集成结果为参照，两者含义不同。
+实验采用两种离线动作评估方式：第一步预测直接取每个动作块的首步，因果时间集成融合不同起点对同一时刻的预测。两种方式使用相同 checkpoint、测试 episodes 和归一化统计量。第 6 节分别给出两种方式的总体结果曲线，并列出实际 MSE 的配对变化。每条退化曲线以对应评估方式的干净训练结果为分母；集成前后变化以第一步预测结果为参照。
 
 \section{数据集与训练协议}
 
@@ -170,6 +170,8 @@ $R=1$ 表示与干净训练持平，$R>1$ 表示退化。下文的总体数字�
 
 \section{总体结果}
 
+\subsection{第一步预测的总体结果}
+
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}
@@ -220,8 +222,8 @@ Constant & \good{0.994} & 1.303 & 2.401 & 1.500\\
 
 % temporal-ensemble:start
 \clearpage\subsection{时间集成后的总体结果}
-复用 270 个 checkpoint 和原测试 episodes，不重新训练；decay=0.7 在评估前固定。只融合起点不晚于当前时刻的预测，并在每条 episode 边界重置历史。原第一步预测的历史核对为 270/270 通过。
-图的计算口径与第 6 节原图相同：先在每个数据集、模型、seed 内，用该条件的测试 MSE 除以同一模型同一 seed 的干净训练测试 MSE，再平均 9 个比值。新图的分子和分母都使用时间集成后的 MSE；横轴、六模型配色和纵轴范围与原图一致。
+两种评估方式使用同一组 270 个 checkpoint、测试 episodes 和归一化统计量；decay=0.7 在评估前固定。只融合起点不晚于当前时刻的预测，并在每条 episode 边界重置历史。第一步预测一致性核对为 270/270 通过。
+两种评估方式采用相同的归一化规则：先在每个数据集、模型、seed 内，用该条件的测试 MSE 除以同一模型同一 seed 的干净训练测试 MSE，再平均 9 个比值。时间集成曲线的分子和分母均使用集成后的 MSE；两种方式的横轴、六模型配色和纵轴范围一致。
 \[R_{\mathrm{ens}}=\frac{\mathrm{MSE}_{\mathrm{damaged\ train,\ ens}}}{\mathrm{MSE}_{\mathrm{clean\ train,\ ens}}}.\]
 \begin{figure}[H]\centering\begin{tikzpicture}\begin{axis}[
 width=0.99\linewidth,height=77mm,ymin=0.85,ymax=2.65,ylabel={平均 MSE 比值 $R_{\mathrm{ens}}$},
@@ -250,7 +252,7 @@ Weighted-Loss & 1.0018 & 1.2465 & 1.0089 & 1.1215\\
 Quality-Full & 1.0022 & 1.1360 & 1.0002 & 1.0970\\
 Shuffled & 1.0091 & 1.2636 & 2.1074 & 1.3787\\
 Constant & 0.9999 & 1.1959 & 2.0747 & 1.3916\\
-\bottomrule\end{tabular}\caption{新图的数值。此表是相对干净训练的退化程度，不是时间集成相对未集成的变化。}\end{table}
+\bottomrule\end{tabular}\caption{时间集成的平均 MSE 比值，衡量相对干净训练的退化程度。集成前后的实际误差变化见配对比较。}\end{table}
 \clearpage\subsection{集成前后的 MSE 变化}
 \begingroup\small\renewcommand{\arraystretch}{1.08}\setlength{\intextsep}{8pt}
 下表逐运行计算 100×(集成后 MSE / 未集成 MSE − 1)，再对 3 数据集 × 3 seeds 取平均。负数表示 MSE 降低，正数表示 MSE 增加；不跨机器人直接平均原始 MSE。
@@ -292,6 +294,8 @@ ALOHA & Constant & 0.00048196 & 0.00053488 & +5.292e-05 & +10.98\%\\
 % temporal-ensemble:end
 \clearpage
 \section{按故障模态解读}
+
+本节及第 8 节的模态分析与模型配对采用第一步预测指标；时间集成的总体结果与两种评估方式的 MSE 对照见第 6 节。
 
 \subsection{Action 标签损坏：加权 loss 是关键}
 
@@ -368,7 +372,7 @@ Quality-Full vs Weighted-Loss & 23 & 24 & 36\\
 \end{table}
 
 \clearpage
-\section{原始质量消融结论与下一步}
+\section{结论与下一步}
 
 \begin{tcolorbox}[colback=panel,colframe=teal,boxrule=0.8pt,arc=1.5mm,title={\color{navy}\bfseries 主要结论}]
 \begin{enumerate}
@@ -376,6 +380,7 @@ Quality-Full vs Weighted-Loss & 23 & 24 & 36\\
 \item \textbf{State quality 输入有中等收益。}它降低了 state-damaged 的平均误差，但无法恢复缺失信息，结果仍差于 clean。
 \item \textbf{Image quality 暂无清晰收益。}当前损坏强度、图像分辨率和离线 action MSE 可能不足以显现闭环视觉风险。
 \item \textbf{Quality-Full 对综合损坏最稳健。}但它相对仅 Weighted-Loss 的优势较小，主要提升仍来自 action-label weighting。
+\item \textbf{固定 decay=0.7 的时间集成未降低总体实际 MSE。}270 组逐运行 MSE 变化百分比的均值为 $+21.20\%$；退化比值下降不能代替实际误差改善，也不构成闭环控制收益的证据。
 \end{enumerate}
 \end{tcolorbox}
 
@@ -408,7 +413,7 @@ Quality-Full vs Weighted-Loss & 23 & 24 & 36\\
 \begin{center}
 \small\color{muted}
 本报告由 Sync2Act 实验 schema v3、quality schema v2 的实测输出生成。\\
-原训练版本：Sync2Act v1.2.0；Git commit \code{a5b4fbbe1e7cb8c9704c3dbfc19a1ba563662068}。\\
+训练版本：Sync2Act v1.2.0；Git commit \code{a5b4fbbe1e7cb8c9704c3dbfc19a1ba563662068}。\\
 时间集成评估的代码指纹、环境与协议见 \code{temporal\_ensemble/summary.json}。
 \end{center}
 

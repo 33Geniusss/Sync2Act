@@ -6,7 +6,7 @@ When updating a Chinese document, update its English counterpart in the same com
 
 ## Generated reports
 
-Both study runners write `report.html` (Chinese) and `report_en.html` (English). The temporal supplement also writes `section_en.html` and `ensemble_relative_mse_en.svg`. Both languages use the same numeric tables; unknown Chinese report text raises a translation error rather than silently producing a partial English report.
+Both study runners write `report.html` (Chinese) and `report_en.html` (English). The temporal-ensemble section also writes `section_en.html` and `ensemble_relative_mse_en.svg`. Both languages use the same numeric tables; unknown Chinese report text raises a translation error rather than silently producing a partial English report.
 
 To regenerate reports from existing local evaluations:
 
