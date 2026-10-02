@@ -6,10 +6,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from sync2act.config import resolve_training_config
 from sync2act.data.huggingface import DownloadCancelled, download_dataset_snapshot
 from sync2act.data.lerobot import DatasetLoadCancelled, load_local_lerobot_dataset
-from sync2act.policies import build_policy
 from sync2act.training import train_policy
+from sync2act.training.setup import build_training_policy
 
 
 class TrainingWorker(QObject):
@@ -25,6 +26,7 @@ class TrainingWorker(QObject):
         output_dir: Path,
         resume_from=None,
         validation_episodes=None,
+        normalization_stats=None,
     ):
         super().__init__()
         self.episodes = episodes
@@ -33,13 +35,17 @@ class TrainingWorker(QObject):
         self.output_dir = output_dir
         self.resume_from = resume_from
         self.validation_episodes = validation_episodes
+        self.normalization_stats = normalization_stats
         self.stop_event = threading.Event()
 
     @Slot()
     def run(self):
         try:
-            model = build_policy(self.model_config)
-            self.training_config["model"] = self.model_config
+            resolved = resolve_training_config(
+                {"model": self.model_config, "training": self.training_config}, source="GUI"
+            )
+            self.training_config = resolved["training"]
+            model = build_training_policy(resolved["model"], self.training_config)
             result = train_policy(
                 model,
                 self.episodes,
@@ -49,6 +55,7 @@ class TrainingWorker(QObject):
                 self.stop_event,
                 self.resume_from,
                 self.validation_episodes,
+                self.normalization_stats,
             )
             self.finished.emit(model, result)
         except Exception:

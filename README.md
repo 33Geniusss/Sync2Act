@@ -114,6 +114,44 @@ The GUI and CLI call the same functions in `pipeline.py`, `training/`, `evaluati
 
 ## Reproducible experiments
 
+YAML, the GUI, and the real-dataset runner now use the same configuration resolver
+in `src/sync2act/config.py`. Explicit configuration values override shared defaults;
+GUI controls and study command-line options supply the final overrides. Different
+presets can still deliberately use different epochs, batch sizes, or architectures.
+The six-way study matrix fixes each variant's model name and quality switches,
+and dataset dimensions come from the loaded data.
+
+All frontends split by episode before applying corruption, freeze normalization
+statistics from the clean training partition, and seed model initialization before
+constructing the policy. The GUI recomputes those clean statistics when its split
+changes. CLI demo and benchmark evaluation use clean held-out test episodes with
+the saved training statistics. Direct `train_policy()` calls without an explicit
+validation partition reserve whole validation episodes; frontend callers also
+reserve the test partition. At least two episodes are required for direct automatic
+train/validation splitting, and three for train/validation/test workflows.
+
+Each new checkpoint has a sibling `<checkpoint-stem>.config.json` containing the
+resolved model/training parameters, parameter sources, dataset settings, episode
+indices, and normalization statistics. `num_workers` is configurable through the
+shared training schema and defaults to 0. The checkpoint's `config` also contains
+the resolved settings.
+
+New training uses **training protocol 2**: smoothness includes only adjacent pairs
+where both actions are non-padding; epoch action loss is aggregated using the
+total valid-step count (or total action-quality weight), and smoothness uses the
+total valid-pair count. The two global means are combined using `lambda_smooth`.
+History records both component losses for training and validation. A short final
+batch no longer receives the same weight as a full batch. Batch optimization
+still uses that batch's own normalized loss.
+
+Historical `mixed_modality_damage_v1_3_0` results and reports describe the previous
+training protocol. They have not been retrained or rewritten. Old checkpoints
+remain loadable for evaluation, but resuming a different training protocol is
+rejected. Use a new experiment directory for the changed objective; the study
+runner rejects training over a study created with a different code fingerprint
+or protocol. Rebuilding an existing report with `--report-only --output <old-dir>`
+continues to use its saved configuration.
+
 ```bash
 # Save a deterministically corrupted demo dataset
 sync2act corrupt --config configs/corruption/shift_2.yaml
@@ -151,16 +189,22 @@ The focused quality study constructs deterministic, contiguous mixed-quality seg
 - `mixed_action_damaged`: 50% clean, 40% action shift by two frames, and 10% action-label missing;
 - `mixed_three_corruptions`: 20% clean, 20% image shift, 20% state shift, 25% action shift, and 5% missing for each of image, state, and action label.
 
-Run the full three-dataset, three-seed study with:
+Run a new full three-dataset, three-seed study with the shared YAML preset:
 
 ```bash
 python tools/run_real_dataset_study.py --skip-download --device cuda \
-  --episodes 0 --frames 0 --epochs 10 --seeds 7 17 27 \
-  --act-batch-size 256 --segment-length 16 \
-  --output runs/mixed_modality_damage_v1_3_0
+  --config configs/train/real_dataset_study.yaml \
+  --output runs/mixed_modality_damage_training_v2
 ```
 
-The complete local reference run finished on 2026-09-25 with all 270 expected
+The preset selects all episodes/frames, 10 epochs, batch 256, horizon 8, seeds
+7/17/27, a fixed split seed of 7, and 16-frame mixture segments. CLI flags such as
+`--epochs 2 --act-batch-size 32` override the YAML for smaller runs. The script's
+default output is also `runs/mixed_modality_damage_training_v2`; without `--config`,
+its smaller development-run defaults remain available. The `study` block is
+specific to this matrix runner; `sync2act train` uses the synthetic `dataset` block.
+
+The historical local reference run finished on 2026-09-25 with all 270 expected
 combinations (3 datasets x 6 ablations x 5 conditions x 3 seeds). The table
 below reports the mean test-MSE ratio relative to the same dataset, model, and
 seed's clean-training baseline; each entry averages 9 dataset-seed ratios.

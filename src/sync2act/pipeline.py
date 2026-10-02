@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
 
-from sync2act.corruptions import apply_corruption
+import torch
+
+from sync2act.config import resolve_training_config
 from sync2act.data.dataset import NormalizationStats
 from sync2act.data.synthetic import generate_demo_episodes
 from sync2act.evaluation import evaluate_policy
 from sync2act.policies import build_policy
 from sync2act.reporting import generate_report
 from sync2act.training import load_checkpoint, train_policy
+from sync2act.training.setup import build_training_policy, prepare_training_episodes
 
 DEFAULT_DEMO_CONFIG = {
     "model": {"name": "bc_mlp", "state_dim": 6, "action_dim": 3, "input_mode": "image_state"},
@@ -34,6 +38,14 @@ def make_demo_dataset(config: dict | None = None):
     )
 
 
+def _demo_dataset_settings(config: dict) -> dict:
+    defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(generate_demo_episodes).parameters.items()
+    }
+    return {**defaults, **{k: v for k, v in config.get("dataset", {}).items() if k in defaults}}
+
+
 def run_training(
     config: dict,
     output_dir: str | Path,
@@ -41,41 +53,44 @@ def run_training(
     stop_event=None,
     resume_from=None,
 ):
-    episodes = make_demo_dataset(config)
-    corruption = config.get("corruption")
-    if corruption:
-        episodes = [
-            apply_corruption(
-                episode,
-                {
-                    **corruption,
-                    "seed": int(corruption.get("seed", config.get("training", {}).get("seed", 7)))
-                    + index,
-                },
-            )
-            for index, episode in enumerate(episodes)
-        ]
-    model_config = config.get("model", config)
-    model = build_policy(model_config)
-    training_config = dict(config.get("training", config))
-    training_config["model"] = model_config
+    """Train on prepared episodes and return (model, clean test episodes, result)."""
+    config = {**config, "dataset": _demo_dataset_settings(config)}
+    config = resolve_training_config(config, source="YAML/pipeline")
+    training_config = config["training"]
+    prepared = prepare_training_episodes(
+        make_demo_dataset(config), training_config, config.get("corruption")
+    )
+    if not prepared.test:
+        raise ValueError(
+            "The CLI/pipeline workflow requires test_split > 0 for held-out evaluation"
+        )
+    training_config["episode_split"] = prepared.split
+    training_config["corruption"] = config.get("corruption")
+    model = build_training_policy(config["model"], training_config)
     result = train_policy(
         model,
-        episodes,
+        prepared.train,
         training_config,
         output_dir,
         progress,
         stop_event,
         resume_from,
+        validation_episodes=prepared.validation,
+        normalization_stats=prepared.stats,
     )
-    return model, episodes, result
+    # Callers evaluate only the clean held-out partition, using checkpoint statistics.
+    return model, prepared.test, result
 
 
 def run_evaluation(config: dict, checkpoint: str | Path, output_dir: str | Path):
-    model = build_policy(config.get("model", config))
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model = build_policy(saved["config"].get("model", config.get("model", config)))
     payload = load_checkpoint(checkpoint, model)
     stats = NormalizationStats.from_dict(payload["stats"]) if payload.get("stats") else None
     episodes = make_demo_dataset(config)
+    saved_config = payload["config"]
+    if _demo_dataset_settings(config) == saved_config.get("dataset_config"):
+        episodes = [episodes[i] for i in saved_config["episode_split"]["test"]]
     metrics = evaluate_policy(
         model,
         episodes,
@@ -94,14 +109,17 @@ def run_demo(
 ) -> dict:
     output = Path(output_dir)
     model, episodes, training = run_training(DEFAULT_DEMO_CONFIG, output, progress)
-    metrics = evaluate_policy(model, episodes, stats=None, output_dir=output)
+    payload = torch.load(training.checkpoint, map_location="cpu", weights_only=False)
+    metrics = evaluate_policy(
+        model, episodes, stats=NormalizationStats.from_dict(payload["stats"]), output_dir=output
+    )
     metrics["training_seconds"] = training.training_seconds
     run = {
         "name": "bundled-demo",
         "model": "bc_mlp",
         "corruption": "clean",
         "seed": 7,
-        "config": DEFAULT_DEMO_CONFIG,
+        "config": payload["config"],
         "checkpoint": str(training.checkpoint),
         "metrics": metrics,
     }
@@ -130,14 +148,21 @@ def run_benchmark(config: dict, output_root: str | Path) -> list[dict]:
                         key: value for key, value in corruption.items() if key != "name"
                     }
                 model, episodes, training = run_training(run_config, output_root / run_name)
-                metrics = evaluate_policy(model, episodes, output_dir=output_root / run_name)
+                payload = torch.load(training.checkpoint, map_location="cpu", weights_only=False)
+                metrics = evaluate_policy(
+                    model,
+                    episodes,
+                    device=payload["config"]["device"],
+                    stats=NormalizationStats.from_dict(payload["stats"]),
+                    output_dir=output_root / run_name,
+                )
                 metrics["training_seconds"] = training.training_seconds
                 run = {
                     "name": run_name,
                     "model": model_name,
                     "corruption": corruption.get("name", "clean"),
                     "seed": seed,
-                    "config": run_config,
+                    "config": payload["config"],
                     "metrics": metrics,
                 }
                 (output_root / run_name / "run.json").write_text(

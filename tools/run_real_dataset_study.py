@@ -15,16 +15,22 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from sync2act.config import (
+    TRAINING_PROTOCOL_VERSION,
+    deep_merge,
+    load_config,
+    resolve_training_config,
+)
 from sync2act.corruptions import build_mixed_quality_dataset, transform_quality_annotations
-from sync2act.data.dataset import NormalizationStats, compute_stats
+from sync2act.data.dataset import NormalizationStats
 from sync2act.data.huggingface import download_dataset_snapshot
 from sync2act.data.lerobot import load_local_lerobot_dataset
-from sync2act.data.split import split_episode_indices
 from sync2act.evaluation import evaluate_policy
 from sync2act.paths import datasets_root
 from sync2act.policies import build_policy
 from sync2act.reporting.localization import english_text
 from sync2act.training import QUALITY_SCHEMA_VERSION, inspect_checkpoint, train_policy
+from sync2act.training.setup import build_training_policy, prepare_training_episodes
 
 DATASETS = [
     {
@@ -258,22 +264,19 @@ def corruption_conditions(episodes: list[dict], fps: float) -> list[dict]:
     ]
 
 
-def model_config(name: str, state_dim: int, action_dim: int) -> dict:
+def model_config(name: str, state_dim: int, action_dim: int, base: dict | None = None) -> dict:
     ablation = ABLATIONS[name]
     common = {
         "name": ablation["policy"],
         "state_dim": state_dim,
         "action_dim": action_dim,
     }
-    return {
-        **common,
-        "horizon": 8,
-        "hidden_dim": 64,
-        "num_layers": 1,
-        "num_heads": 4,
-        "dropout": 0.0,
-        "use_quality_features": ablation["quality_features"],
-    }
+    return resolve_training_config(
+        base or {},
+        model_overrides={**common, "use_quality_features": ablation["quality_features"]},
+        source="study YAML",
+        override_source="study ablation/data",
+    )["model"]
 
 
 def training_config(
@@ -284,22 +287,23 @@ def training_config(
     model: dict,
     bc_batch_size: int = 64,
     act_batch_size: int = 32,
+    base: dict | None = None,
 ) -> dict:
-    return {
-        "epochs": epochs,
-        "batch_size": act_batch_size,
-        "learning_rate": 0.001,
-        "weight_decay": 0.0001,
-        "loss": "smooth_l1",
-        "seed": seed,
-        "grad_clip": 1.0,
-        "device": device,
-        "horizon": 8,
-        "quality_weighted_loss": ABLATIONS[name]["weighted_loss"],
-        "quality_transform": ABLATIONS[name]["quality_transform"],
-        "lambda_smooth": 0.01,
-        "model": model,
-    }
+    base = deep_merge({"training": {"validation_split": 0.1, "test_split": 0.1}}, base or {})
+    base["model"] = model
+    return resolve_training_config(
+        base,
+        source="study YAML",
+        training_overrides={
+            "epochs": epochs,
+            "batch_size": act_batch_size,
+            "seed": seed,
+            "device": device,
+            "quality_weighted_loss": ABLATIONS[name]["weighted_loss"],
+            "quality_transform": ABLATIONS[name]["quality_transform"],
+        },
+        override_source="study CLI/matrix",
+    )["training"]
 
 
 def _flatten_runs(runs: list[dict]) -> pd.DataFrame:
@@ -773,61 +777,77 @@ def _load_compatible_runs(
 def run_study(args: argparse.Namespace) -> Path:
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    existing = _read_saved_study(output_root)
+    if (
+        not args.report_only
+        and existing
+        and (
+            existing.get("training_protocol_version") != TRAINING_PROTOCOL_VERSION
+            or existing.get("source_fingerprint") != _source_fingerprint()
+        )
+    ):
+        raise ValueError(
+            "Training code/protocol changed; use a new --output directory to preserve existing results"
+        )
     saved_study = _read_saved_study(output_root) if args.report_only else {}
+    base = load_config(args.config) if args.config else saved_study.get("base_config", {})
+    options = deep_merge(saved_study, base.get("study", {}))
+    for config_key, study_key in {
+        "epochs": "epochs",
+        "batch_size": "act_batch_size",
+        "device": "device",
+        "split_seed": "split_seed",
+    }.items():
+        if config_key in base.get("training", {}):
+            options[study_key] = base["training"][config_key]
+    if base.get("training", {}).get("device") == "auto":
+        options["device"] = "cuda" if torch.cuda.is_available() else "cpu"
+    if args.report_only and not args.config:
+        # Saved resolved CLI values take precedence over the original YAML defaults.
+        options = deep_merge(options, saved_study)
     saved_dataset_names = [
         item.get("name")
         for item in saved_study.get("datasets", [])
         if isinstance(item, dict) and item.get("name")
     ]
-    selected_dataset_names = args.datasets or saved_dataset_names or [
-        item["name"] for item in DATASETS
-    ]
-    selected_model_names = args.models or saved_study.get("models") or MODELS
-    selected_condition_names = (
-        args.conditions or saved_study.get("conditions") or CONDITION_ORDER
+    selected_dataset_names = (
+        args.datasets
+        or options.get("dataset_names")
+        or saved_dataset_names
+        or [item["name"] for item in DATASETS]
     )
-    seeds = list(
-        dict.fromkeys(
-            _resolved_option(args.seeds, saved_study, "seeds", DEFAULT_SEEDS)
-        )
-    )
+    selected_model_names = args.models or options.get("models") or MODELS
+    selected_condition_names = args.conditions or options.get("conditions") or CONDITION_ORDER
+    seeds = list(dict.fromkeys(_resolved_option(args.seeds, options, "seeds", DEFAULT_SEEDS)))
     if len(seeds) < 1:
         raise ValueError("At least one seed is required")
     device = _resolved_option(
         args.device,
-        saved_study,
+        options,
         "device",
         "cuda" if torch.cuda.is_available() else "cpu",
     )
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-    saved_episode_limit = saved_study.get("episode_limit", DEFAULT_EPISODES)
-    saved_frame_limit = saved_study.get("frames_per_episode_limit", DEFAULT_FRAMES)
+    saved_episode_limit = options.get("episode_limit", DEFAULT_EPISODES)
+    saved_frame_limit = options.get("frames_per_episode_limit", DEFAULT_FRAMES)
     episode_limit = (
         saved_episode_limit
         if args.episodes is None
         else (None if args.episodes <= 0 else args.episodes)
     )
     frame_limit = (
-        saved_frame_limit
-        if args.frames is None
-        else (None if args.frames <= 0 else args.frames)
+        saved_frame_limit if args.frames is None else (None if args.frames <= 0 else args.frames)
     )
     image_size = int(
-        _resolved_option(
-            args.image_size, saved_study, "max_image_size", DEFAULT_IMAGE_SIZE
-        )
+        _resolved_option(args.image_size, options, "max_image_size", DEFAULT_IMAGE_SIZE)
     )
-    epochs = int(_resolved_option(args.epochs, saved_study, "epochs", DEFAULT_EPOCHS))
-    split_seed = int(
-        _resolved_option(
-            args.split_seed, saved_study, "split_seed", DEFAULT_SPLIT_SEED
-        )
-    )
+    epochs = int(_resolved_option(args.epochs, options, "epochs", DEFAULT_EPOCHS))
+    split_seed = int(_resolved_option(args.split_seed, options, "split_seed", DEFAULT_SPLIT_SEED))
     bc_batch_size = int(
         _resolved_option(
             args.bc_batch_size,
-            saved_study,
+            options,
             "bc_batch_size",
             DEFAULT_BC_BATCH_SIZE,
         )
@@ -835,7 +855,7 @@ def run_study(args: argparse.Namespace) -> Path:
     act_batch_size = int(
         _resolved_option(
             args.act_batch_size,
-            saved_study,
+            options,
             "act_batch_size",
             DEFAULT_ACT_BATCH_SIZE,
         )
@@ -843,7 +863,7 @@ def run_study(args: argparse.Namespace) -> Path:
     segment_length = int(
         _resolved_option(
             args.segment_length,
-            saved_study,
+            options,
             "mixture_segment_length",
             DEFAULT_SEGMENT_LENGTH,
         )
@@ -854,22 +874,26 @@ def run_study(args: argparse.Namespace) -> Path:
         if args.report_only
         else current_source_fingerprint
     )
-    selected_datasets = [
-        item for item in DATASETS if item["name"] in selected_dataset_names
-    ]
+    selected_datasets = [item for item in DATASETS if item["name"] in selected_dataset_names]
     selected_models = [name for name in MODELS if name in selected_model_names]
-    selected_conditions = [
-        name for name in CONDITION_ORDER if name in selected_condition_names
-    ]
+    selected_conditions = [name for name in CONDITION_ORDER if name in selected_condition_names]
+    base = deep_merge(
+        {
+            "training": {
+                "validation_split": saved_study.get("validation_split", 0.1),
+                "test_split": saved_study.get("test_split", 0.1),
+            }
+        },
+        base,
+    )
+    base["training"]["split_seed"] = split_seed
     study = {
         "name": "quality_aware_act_mixed_quality_ablation",
         "experiment_schema_version": 3,
         "quality_schema_version": QUALITY_SCHEMA_VERSION,
         "source_fingerprint": source_fingerprint,
         "git_commit": (
-            saved_study.get("git_commit", _git_commit())
-            if args.report_only
-            else _git_commit()
+            saved_study.get("git_commit", _git_commit()) if args.report_only else _git_commit()
         ),
         "started_at": saved_study.get("started_at", datetime.now(UTC).isoformat()),
         "datasets": selected_datasets,
@@ -881,8 +905,8 @@ def run_study(args: argparse.Namespace) -> Path:
         "frames_per_episode_limit": frame_limit,
         "max_image_size": image_size,
         "epochs": epochs,
-        "validation_split": 0.1,
-        "test_split": 0.1,
+        "validation_split": base["training"]["validation_split"],
+        "test_split": base["training"]["test_split"],
         "bc_batch_size": bc_batch_size,
         "act_batch_size": act_batch_size,
         "device": device,
@@ -890,6 +914,13 @@ def run_study(args: argparse.Namespace) -> Path:
         "normalization": "frozen clean-training-episode statistics",
         "mixture_segment_length": segment_length,
         "condition_count": len(selected_conditions),
+        "training_protocol_version": (
+            saved_study.get("training_protocol_version", 1)
+            if args.report_only
+            else TRAINING_PROTOCOL_VERSION
+        ),
+        "config_file": str(args.config.resolve()) if args.config else None,
+        "base_config": base,
     }
     runs: list[dict] = []
     if args.report_only:
@@ -944,11 +975,16 @@ def run_study(args: argparse.Namespace) -> Path:
             raise RuntimeError("Full-dataset run did not load every source episode")
         if frame_limit is None and metadata["frames"] != metadata["source_frames"]:
             raise RuntimeError("Full-dataset run did not load every source frame")
-        split = split_episode_indices(len(episodes), 0.1, 0.1, split_seed)
-        clean_train = [episodes[index] for index in split["train"]]
-        clean_validation = [episodes[index] for index in split["validation"]]
-        clean_test = [episodes[index] for index in split["test"]]
-        clean_stats = compute_stats(clean_train)
+        prepared = prepare_training_episodes(
+            episodes, {**base["training"], "seed": split_seed, "quality_transform": "identity"}
+        )
+        split = prepared.split
+        clean_train, clean_validation, clean_test = (
+            prepared.train,
+            prepared.validation,
+            prepared.test,
+        )
+        clean_stats = prepared.stats
         conditions = corruption_conditions(clean_train, float(metadata.get("fps") or 30))
         conditions = [item for item in conditions if item["name"] in selected_conditions]
         dataset_manifest = {
@@ -970,6 +1006,7 @@ def run_study(args: argparse.Namespace) -> Path:
                 name,
                 int(clean_train[0]["observation.state"].shape[1]),
                 int(clean_train[0]["action"].shape[1]),
+                base,
             )
             for condition in conditions:
                 for seed in seeds:
@@ -983,7 +1020,17 @@ def run_study(args: argparse.Namespace) -> Path:
                         config,
                         bc_batch_size,
                         act_batch_size,
+                        base,
                     )
+                    train_config["episode_split"] = split
+                    train_config["corruption"] = condition["components"]
+                    train_config["dataset_config"] = {
+                        "repo_id": dataset_spec["repo_id"],
+                        "revision": dataset_spec["revision"],
+                        "max_image_size": image_size,
+                        "episode_limit": episode_limit,
+                        "frames_per_episode_limit": frame_limit,
+                    }
                     train_config["source_fingerprint"] = source_fingerprint
                     signature = _experiment_signature(
                         dataset_spec,
@@ -997,8 +1044,7 @@ def run_study(args: argparse.Namespace) -> Path:
                         clean_stats,
                     )
                     train_config["experiment_signature"] = signature
-                    torch.manual_seed(seed)
-                    model = build_policy(config)
+                    model = build_training_policy(config, train_config)
                     completed, reason = _completed_run(run_path, model, signature)
                     if completed is not None:
                         runs.append(completed)
@@ -1080,7 +1126,7 @@ def run_study(args: argparse.Namespace) -> Path:
                         "mixture_manifest": mixture_manifest,
                         "seed": seed,
                         "model_config": config,
-                        "training_config": train_config,
+                        "training_config": payload["config"],
                         "split": split,
                         "metrics": metrics,
                         "experiment_schema_version": 3,
@@ -1115,7 +1161,10 @@ def run_study(args: argparse.Namespace) -> Path:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
-        "--output", type=Path, default=Path("runs/mixed_modality_damage_v1_3_0")
+        "--output", type=Path, default=Path("runs/mixed_modality_damage_training_v2")
+    )
+    result.add_argument(
+        "--config", type=Path, help="Shared model/training YAML; CLI options override it"
     )
     result.add_argument("--datasets-root", type=Path, default=datasets_root())
     result.add_argument("--datasets", nargs="+", choices=[item["name"] for item in DATASETS])

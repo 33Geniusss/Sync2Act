@@ -187,6 +187,47 @@ def test_corruption_is_applied_only_to_training_episodes(qtbot):
     window.close()
 
 
+def test_gui_worker_uses_frozen_clean_stats_and_shared_configuration(qtbot, tmp_path):
+    import torch
+
+    from sync2act.config import resolve_training_config
+    from sync2act.data.dataset import compute_stats
+    from sync2act.gui.worker import TrainingWorker
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.original_episodes = generate_demo_episodes(num_episodes=6, length=8, image_size=8)
+    window.active_corruption_config = {
+        "type": "state_anomaly", "mode": "spike", "probability": 1.0,
+        "magnitude": 1000, "seed": 7,
+    }
+    window._rebuild_episode_partitions()
+    window.device_combo.setCurrentText("cpu")
+    window.epochs_spin.setValue(1)
+    window.batch_size_spin.setValue(8)
+    model_config, config = window._training_configs()
+    expected = resolve_training_config({"model": {"state_dim": 6, "action_dim": 3}})
+    assert model_config == expected["model"]
+    assert config["horizon"] == expected["training"]["horizon"]
+    worker = TrainingWorker(
+        window.training_episodes, model_config, config, tmp_path,
+        validation_episodes=window.validation_episodes,
+        normalization_stats=window.clean_training_stats,
+    )
+    errors, finished = [], []
+    worker.failed.connect(errors.append)
+    worker.finished.connect(lambda model, result: finished.append(result))
+    worker.run()
+    assert not errors
+    assert len(finished) == 1
+    payload = torch.load(finished[0].checkpoint, weights_only=False)
+    clean = [window.original_episodes[i] for i in window.episode_split["train"]]
+    assert payload["stats"] == compute_stats(clean).to_dict()
+    assert payload["stats"] != compute_stats(window.training_episodes).to_dict()
+    assert payload["config"]["config_sources"]["training.epochs"] == "GUI"
+    window.close()
+
+
 def test_inspector_dimension_selection_quality_plot_and_step_cursor(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

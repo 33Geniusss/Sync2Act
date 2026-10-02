@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-import random
+import json
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import torch
-from torch.nn import functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
+from sync2act.config import resolve_training_config
 from sync2act.data.dataset import EpisodeWindowDataset, NormalizationStats
 from sync2act.data.episode import Episode
-from sync2act.policies.quality_act import quality_weighted_action_loss
 
 from .checkpoint import load_checkpoint, save_checkpoint
+from .losses import EpochLossAccumulator, prediction_loss_sums
+from .setup import describe_policy, prepare_training_episodes, seed_everything
 
 
 @dataclass
@@ -37,7 +37,7 @@ def _move_batch(batch: dict, device: torch.device) -> dict:
     return moved
 
 
-def _loss(model, batch, config):
+def _loss(model, batch, config, *, return_sums=False):
     prediction = model(
         state=batch["state"],
         image=batch["image"],
@@ -53,29 +53,9 @@ def _loss(model, batch, config):
     target = batch["actions"][:, : prediction.shape[1]]
     padding = batch["padding_mask"][:, : prediction.shape[1]]
     action_label_quality = batch["action_label_quality"][:, : prediction.shape[1]]
-    use_weighting = config.get("quality_weighted_loss", False)
-    if use_weighting:
-        action_loss = quality_weighted_action_loss(
-            prediction,
-            target,
-            action_label_quality,
-            padding,
-            config.get("loss", "mse"),
-        )
-    else:
-        valid = (~padding).unsqueeze(-1).expand_as(prediction)
-        per_element = (
-            F.mse_loss(prediction, target, reduction="none")
-            if config.get("loss", "mse") == "mse"
-            else F.smooth_l1_loss(prediction, target, reduction="none")
-        )
-        action_loss = per_element[valid].mean() if valid.any() else prediction.sum() * 0
-    if prediction.shape[1] > 1:
-        smoothness = (prediction[:, 1:] - prediction[:, :-1]).square().mean()
-    else:
-        smoothness = prediction.sum() * 0
-    total = action_loss + float(config.get("lambda_smooth", 0.0)) * smoothness
-    return total, action_loss, smoothness
+    sums = prediction_loss_sums(prediction, target, padding, action_label_quality, config)
+    values = sums.means(float(config.get("lambda_smooth", 0.0)))
+    return (*values, sums) if return_sums else values
 
 
 def train_policy(
@@ -89,38 +69,49 @@ def train_policy(
     validation_episodes: list[Episode] | None = None,
     normalization_stats: NormalizationStats | None = None,
 ) -> TrainingResult:
-    seed = int(config.get("seed", 7))
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    model_settings = config.get("model") or describe_policy(model)
+    config = resolve_training_config(
+        {"model": model_settings, "training": config}, source="train_policy"
+    )["training"]
+    seed = int(config["seed"])
+    seed_everything(seed)
+    device = torch.device(config["device"])
     model.to(device)
     horizon = int(config.get("horizon", getattr(model, "horizon", 1)))
-    if resume_from is not None and normalization_stats is None:
+    if resume_from is not None:
         resume_payload = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
-        if resume_payload.get("stats"):
+        if (
+            resume_payload.get("config", {}).get("training_protocol_version")
+            != config["training_protocol_version"]
+        ):
+            raise ValueError("Checkpoint uses a different training protocol; start a new run")
+        if normalization_stats is None and resume_payload.get("stats"):
             normalization_stats = NormalizationStats.from_dict(resume_payload["stats"])
-    dataset = EpisodeWindowDataset(episodes, horizon=horizon, stats=normalization_stats)
     if validation_episodes is None:
-        val_size = max(1, int(len(dataset) * float(config.get("validation_split", 0.15))))
-        train_size = len(dataset) - val_size
-        train_set, val_set = random_split(
-            dataset, [train_size, val_size], generator=torch.Generator().manual_seed(seed)
-        )
-    else:
-        train_set = dataset
-        val_set = EpisodeWindowDataset(validation_episodes, horizon=horizon, stats=dataset.stats)
+        # Low-level callers supply an unsplit dataset. Reserve validation episodes;
+        # frontends additionally reserve test episodes before calling this function.
+        prepared = prepare_training_episodes(episodes, {**config, "test_split": 0.0})
+        episodes, validation_episodes = prepared.train, prepared.validation
+        config["episode_split"] = prepared.split
+        config["test_split"] = 0.0
+        if normalization_stats is None:
+            normalization_stats = prepared.stats
+    dataset = EpisodeWindowDataset(episodes, horizon=horizon, stats=normalization_stats)
+    train_set = dataset
+    val_set = EpisodeWindowDataset(validation_episodes, horizon=horizon, stats=dataset.stats)
     loader = DataLoader(
         train_set,
         batch_size=int(config.get("batch_size", 32)),
         shuffle=True,
         generator=torch.Generator().manual_seed(seed),
         pin_memory=device.type == "cuda",
+        num_workers=int(config["num_workers"]),
     )
     val_loader = DataLoader(
         val_set,
         batch_size=int(config.get("batch_size", 32)),
         pin_memory=device.type == "cuda",
+        num_workers=int(config["num_workers"]),
     )
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -144,28 +135,40 @@ def train_policy(
     if Path(checkpoint_name).name != checkpoint_name or not checkpoint_name.endswith(".pt"):
         raise ValueError("checkpoint_name must be a .pt filename without a directory")
     checkpoint_path = output / checkpoint_name
+    snapshot = {
+        "model": config["model"],
+        "training": {
+            k: v
+            for k, v in config.items()
+            if k not in {"model", "dataset_config", "config_sources"}
+        },
+        "dataset": config.get("dataset_config", {}),
+        "config_sources": config.get("config_sources", {}),
+        "normalization_stats": dataset.stats.to_dict(),
+    }
+    checkpoint_path.with_suffix(".config.json").write_text(
+        json.dumps(snapshot, indent=2), encoding="utf-8"
+    )
     started = time.perf_counter()
     stopped = False
     epochs = int(config.get("epochs", 3))
     max_steps = config.get("max_steps")
     for epoch in range(start_epoch, epochs):
         model.train()
-        train_total = 0.0
-        batches = 0
+        train_totals = EpochLossAccumulator()
         for batch in loader:
             if stop_event and stop_event.is_set():
                 stopped = True
                 break
             batch = _move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            loss, action_loss, smoothness = _loss(model, batch, config)
+            loss, action_loss, smoothness, sums = _loss(model, batch, config, return_sums=True)
             loss.backward()
             if config.get("grad_clip"):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(config["grad_clip"]))
             optimizer.step()
             step += 1
-            batches += 1
-            train_total += float(loss.detach())
+            train_totals.update(sums)
             event = {
                 "epoch": epoch,
                 "step": step,
@@ -184,16 +187,23 @@ def train_policy(
                 stopped = True
                 break
         model.eval()
-        validation = []
+        validation_totals = EpochLossAccumulator()
         with torch.no_grad():
             for batch in val_loader:
                 batch = _move_batch(batch, device)
-                validation.append(float(_loss(model, batch, config)[0]))
+                *_, sums = _loss(model, batch, config, return_sums=True)
+                validation_totals.update(sums)
+        train_mean, train_action, train_smooth = train_totals.means(config["lambda_smooth"])
+        val_mean, val_action, val_smooth = validation_totals.means(config["lambda_smooth"])
         record = {
             "epoch": epoch,
             "step": step,
-            "train_loss": train_total / max(1, batches),
-            "validation_loss": sum(validation) / max(1, len(validation)),
+            "train_loss": train_mean,
+            "validation_loss": val_mean,
+            "train_action_loss": train_action,
+            "train_smoothness_loss": train_smooth,
+            "validation_action_loss": val_action,
+            "validation_smoothness_loss": val_smooth,
             "learning_rate": optimizer.param_groups[0]["lr"],
         }
         history.append(record)

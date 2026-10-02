@@ -1,0 +1,28 @@
+# Shared model/training schema. Run with tools/run_real_dataset_study.py --config ...
+# Model names and quality switches are selected by the six-way ablation matrix.
+model:
+  name: act_lite
+  horizon: 8
+  hidden_dim: 64
+  num_layers: 1
+  num_heads: 4
+  dropout: 0.0
+training:
+  device: auto
+  epochs: 10
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  loss: smooth_l1
+  lambda_smooth: 0.01
+  grad_clip: 1.0
+  validation_split: 0.1
+  test_split: 0.1
+  split_seed: 7
+  num_workers: 0
+study:
+  seeds: [7, 17, 27]
+  episode_limit: null
+  frames_per_episode_limit: null
+  max_image_size: 64
+  mixture_segment_length: 16

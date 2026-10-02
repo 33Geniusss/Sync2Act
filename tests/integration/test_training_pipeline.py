@@ -1,11 +1,12 @@
 import json
 
+import pytest
 import torch
 
 from sync2act.corruptions import state_anomaly
 from sync2act.data import generate_demo_episodes
 from sync2act.data.dataset import compute_stats
-from sync2act.pipeline import run_demo
+from sync2act.pipeline import run_demo, run_training
 from sync2act.policies import BCMLP, ACTLite
 from sync2act.training import load_checkpoint, train_policy
 
@@ -184,3 +185,71 @@ def test_end_to_end_demo_writes_real_artifacts(tmp_path):
     assert (tmp_path / "demo" / "checkpoint.pt").exists()
     assert (tmp_path / "demo" / "report.html").exists()
     assert json.loads((tmp_path / "demo" / "run.json").read_text())["metrics"]["action_mse"] >= 0
+
+
+def test_yaml_pipeline_reproducible_and_evaluates_clean_holdout(tmp_path):
+    from sync2act.config import load_config, save_config
+
+    config_path = save_config(
+        {
+            "model": {"name": "bc_mlp", "hidden_dim": 16},
+            "dataset": {"num_episodes": 6, "length": 8, "image_size": 8, "seed": 7},
+            "training": {"epochs": 1, "batch_size": 7, "device": "cpu", "seed": 11},
+            "corruption": {
+                "type": "state_anomaly",
+                "mode": "spike",
+                "probability": 1.0,
+                "magnitude": 1000,
+            },
+        },
+        tmp_path / "train.yaml",
+    )
+    config = load_config(config_path)
+    model_a, test, a = run_training(config, tmp_path / "a")
+    torch.randn(23)
+    model_b, _, b = run_training(config, tmp_path / "b")
+    assert all(
+        torch.equal(value, model_b.state_dict()[key]) for key, value in model_a.state_dict().items()
+    )
+    assert a.history == b.history
+    saved = torch.load(a.checkpoint, weights_only=False)
+    split = saved["config"]["episode_split"]
+    clean = generate_demo_episodes(**config["dataset"])
+    assert len(test) == len(split["test"]) == 1
+    assert torch.equal(test[0]["action"], clean[split["test"][0]]["action"])
+    expected = compute_stats([clean[i] for i in split["train"]])
+    assert saved["stats"] == expected.to_dict()
+    snapshot = json.loads(a.checkpoint.with_suffix(".config.json").read_text())
+    assert snapshot["training"]["episode_split"] == split
+    assert snapshot["model"]["hidden_dim"] == 16
+
+
+def test_low_level_training_splits_whole_episodes_before_normalizing(tmp_path):
+    episodes = generate_demo_episodes(num_episodes=3, length=8, image_size=8)
+    result = train_policy(
+        BCMLP(6, 3, hidden_dim=16),
+        episodes,
+        {"epochs": 1, "batch_size": 8, "device": "cpu"},
+        tmp_path,
+    )
+    saved = torch.load(result.checkpoint, weights_only=False)
+    split = saved["config"]["episode_split"]
+    assert len(split["validation"]) == 1 and len(split["train"]) == 2
+    assert not set(split["train"]) & set(split["validation"])
+    assert saved["stats"] == compute_stats([episodes[i] for i in split["train"]]).to_dict()
+    assert saved["config"]["model"]["hidden_dim"] == 16
+
+
+def test_resume_rejects_old_loss_protocol_without_writing_new_artifacts(tmp_path):
+    episodes = generate_demo_episodes(num_episodes=2, length=4, image_size=8)
+    config = {"epochs": 1, "batch_size": 4, "device": "cpu"}
+    first = train_policy(BCMLP(6, 3, hidden_dim=16), episodes, config, tmp_path / "first")
+    payload = torch.load(first.checkpoint, weights_only=False)
+    payload["config"].pop("training_protocol_version")
+    legacy_path = tmp_path / "legacy.pt"
+    torch.save(payload, legacy_path)
+    with pytest.raises(ValueError, match="different training protocol"):
+        train_policy(
+            BCMLP(6, 3, hidden_dim=16), episodes, config, tmp_path / "new", resume_from=legacy_path
+        )
+    assert not (tmp_path / "new").exists()

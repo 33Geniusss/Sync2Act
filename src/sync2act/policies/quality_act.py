@@ -7,13 +7,13 @@ from torch.nn import functional as F
 from .act_lite import ACTLite
 
 
-def quality_weighted_action_loss(
+def action_loss_sums(
     prediction: torch.Tensor,
     target: torch.Tensor,
     action_label_quality: torch.Tensor,
     padding_mask: torch.Tensor | None = None,
     loss_type: str = "mse",
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     element = (
         F.mse_loss(prediction, target, reduction="none")
         if loss_type == "mse"
@@ -23,10 +23,22 @@ def quality_weighted_action_loss(
     weights = action_label_quality.to(step_loss.dtype)
     if padding_mask is not None:
         weights = weights * (~padding_mask).to(step_loss.dtype)
-    denominator = weights.sum()
+    return (step_loss * weights).sum(), weights.sum()
+
+
+def quality_weighted_action_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    action_label_quality: torch.Tensor,
+    padding_mask: torch.Tensor | None = None,
+    loss_type: str = "mse",
+) -> torch.Tensor:
+    numerator, denominator = action_loss_sums(
+        prediction, target, action_label_quality, padding_mask, loss_type
+    )
     return torch.where(
         denominator > 0,
-        (step_loss * weights).sum() / denominator.clamp_min(1e-8),
+        numerator / denominator.clamp_min(1e-8),
         prediction.sum() * 0.0,
     )
 

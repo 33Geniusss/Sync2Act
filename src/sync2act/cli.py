@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from sync2act.config import load_config
+from sync2act.config import load_config, resolve_training_config
 from sync2act.corruptions import apply_corruption
 from sync2act.pipeline import (
     make_demo_dataset,
@@ -69,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
         torch.save(episodes, target)
         print(f"Saved {len(episodes)} corrupted episodes to {target}")
     elif args.command == "train":
-        config = load_config(args.config)
+        config = resolve_training_config(
+            load_config(args.config), source=str(Path(args.config).resolve())
+        )
         _, _, result = run_training(
             config, args.output, lambda event: print(json.dumps(event)), resume_from=args.resume
         )

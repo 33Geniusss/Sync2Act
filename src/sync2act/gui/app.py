@@ -38,16 +38,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sync2act.config import save_config
+from sync2act.config import resolve_training_config, save_config
 from sync2act.corruptions import apply_corruption
 from sync2act.data.dataset import NormalizationStats
 from sync2act.data.episode import ensure_modal_quality
-from sync2act.data.split import split_episode_indices
 from sync2act.evaluation import evaluate_policy
 from sync2act.paths import default_dataset_path, models_root, new_model_checkpoint_path
 from sync2act.policies import build_policy
 from sync2act.reporting import generate_report
 from sync2act.training import load_checkpoint
+from sync2act.training.setup import prepare_training_episodes
 
 from .worker import DatasetDownloadWorker, DatasetLoadWorker, TrainingWorker
 
@@ -620,48 +620,50 @@ class MainWindow(QMainWindow):
             "Training Monitor",
             "Training runs in a worker thread; stopping saves a resumable checkpoint safely.",
         )
+        defaults = resolve_training_config({})["training"]
         parameter_box = QGroupBox("Training parameters")
         controls = QGridLayout(parameter_box)
         self.model_combo = QComboBox()
         self.model_combo.addItems(["bc_mlp", "act_lite", "quality_act"])
         self.device_combo = QComboBox()
         self.device_combo.addItems(["auto", "cpu", "cuda"])
-        self.device_combo.setCurrentText("cuda" if torch.cuda.is_available() else "cpu")
+        self.device_combo.setCurrentText(defaults["device"])
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 1000)
-        self.epochs_spin.setValue(3)
+        self.epochs_spin.setValue(defaults["epochs"])
         self.batch_size_spin = QSpinBox()
         self.batch_size_spin.setRange(1, 4096)
-        self.batch_size_spin.setValue(32)
+        self.batch_size_spin.setValue(defaults["batch_size"])
         self.learning_rate_spin = QDoubleSpinBox()
         self.learning_rate_spin.setRange(0.000001, 1.0)
         self.learning_rate_spin.setDecimals(6)
         self.learning_rate_spin.setSingleStep(0.0001)
-        self.learning_rate_spin.setValue(0.003)
+        self.learning_rate_spin.setValue(defaults["learning_rate"])
         self.weight_decay_spin = QDoubleSpinBox()
         self.weight_decay_spin.setRange(0.0, 1.0)
         self.weight_decay_spin.setDecimals(6)
         self.weight_decay_spin.setSingleStep(0.0001)
-        self.weight_decay_spin.setValue(0.0001)
+        self.weight_decay_spin.setValue(defaults["weight_decay"])
         self.validation_split_spin = QDoubleSpinBox()
         self.validation_split_spin.setRange(0.01, 0.5)
         self.validation_split_spin.setDecimals(2)
         self.validation_split_spin.setSingleStep(0.05)
-        self.validation_split_spin.setValue(0.15)
+        self.validation_split_spin.setValue(defaults["validation_split"])
         self.test_split_spin = QDoubleSpinBox()
         self.test_split_spin.setRange(0.01, 0.5)
         self.test_split_spin.setDecimals(2)
         self.test_split_spin.setSingleStep(0.05)
-        self.test_split_spin.setValue(0.15)
+        self.test_split_spin.setValue(defaults["test_split"])
         self.loss_combo = QComboBox()
         self.loss_combo.addItems(["mse", "smooth_l1"])
+        self.loss_combo.setCurrentText(defaults["loss"])
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_147_483_647)
-        self.seed_spin.setValue(7)
+        self.seed_spin.setValue(defaults["seed"])
         self.grad_clip_spin = QDoubleSpinBox()
         self.grad_clip_spin.setRange(0.0, 100.0)
         self.grad_clip_spin.setDecimals(2)
-        self.grad_clip_spin.setValue(0.0)
+        self.grad_clip_spin.setValue(defaults["grad_clip"])
         self.grad_clip_spin.setToolTip("0 disables gradient clipping")
 
         parameters = [
@@ -993,31 +995,25 @@ class MainWindow(QMainWindow):
     def _rebuild_episode_partitions(self):
         if not self.original_episodes:
             return
-        self.episode_split = split_episode_indices(
-            len(self.original_episodes),
-            self.validation_split_spin.value(),
-            self.test_split_spin.value(),
-            self.seed_spin.value(),
+        prepared = prepare_training_episodes(
+            self.original_episodes,
+            {
+                "validation_split": self.validation_split_spin.value(),
+                "test_split": self.test_split_spin.value(), "seed": self.seed_spin.value(),
+            },
+            self.active_corruption_config,
         )
+        self.episode_split = prepared.split
+        self.clean_training_stats = prepared.stats
         self.episode_partitions = {
             episode_index: partition
             for partition, indices in self.episode_split.items()
             for episode_index in indices
         }
-        working_episodes = list(self.original_episodes)
-        if self.active_corruption_config:
-            config = self.active_corruption_config
-            for episode_index in self.episode_split["train"]:
-                working_episodes[episode_index] = apply_corruption(
-                    self.original_episodes[episode_index],
-                    {**config, "seed": config["seed"] + episode_index},
-                )
-        self.episodes = working_episodes
-        self.training_episodes = [self.episodes[index] for index in self.episode_split["train"]]
-        self.validation_episodes = [
-            self.original_episodes[index] for index in self.episode_split["validation"]
-        ]
-        self.test_episodes = [self.original_episodes[index] for index in self.episode_split["test"]]
+        self.episodes = prepared.working
+        self.training_episodes = prepared.train
+        self.validation_episodes = prepared.validation
+        self.test_episodes = prepared.test
         corruption = (
             self.active_corruption_config["type"] if self.active_corruption_config else "clean"
         )
@@ -1386,18 +1382,12 @@ class MainWindow(QMainWindow):
 
     def _training_configs(self):
         name = self.model_combo.currentText()
-        horizon = 1 if name == "bc_mlp" else 8
         state_dim = int(self.episodes[0]["observation.state"].shape[1])
         action_dim = int(self.episodes[0]["action"].shape[1])
         model = {
             "name": name,
             "state_dim": state_dim,
             "action_dim": action_dim,
-            "input_mode": "image_state",
-            "horizon": horizon,
-            "hidden_dim": 64,
-            "num_layers": 1,
-            "num_heads": 4,
         }
         training = {
             "epochs": self.epochs_spin.value(),
@@ -1414,12 +1404,12 @@ class MainWindow(QMainWindow):
                 if self.device_combo.currentText() == "auto"
                 else self.device_combo.currentText()
             ),
-            "horizon": horizon,
-            "quality_weighted_loss": name == "quality_act",
-            "lambda_smooth": 0.01,
             "episode_split": self.episode_split,
+            "corruption": self.active_corruption_config,
+            "dataset_config": self.dataset_metadata,
         }
-        return model, training
+        resolved = resolve_training_config({"model": model, "training": training}, source="GUI")
+        return resolved["model"], resolved["training"]
 
     def start_training(self, checked=False, resume=False):
         if not self.episodes:
@@ -1456,6 +1446,7 @@ class MainWindow(QMainWindow):
             output,
             resume_path,
             validation_episodes=self.validation_episodes,
+            normalization_stats=self.clean_training_stats,
         )
         self.model_test_episodes = list(self.test_episodes)
         self.worker.moveToThread(self.thread)
