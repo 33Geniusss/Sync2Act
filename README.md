@@ -83,7 +83,17 @@ The optional local Windows bundle can be rebuilt with:
 python -m pip install pyinstaller
 python -m PyInstaller --noconfirm Sync2Act.spec
 dist\Sync2Act\Sync2Act.exe
+python tools/package_windows_release.py --output release/Sync2Act-Windows-x64-v1.3.0.zip
 ```
+
+For release verification, run the executable with `SYNC2ACT_SMOKE_TEST_DIR` set
+to a new empty output directory (PowerShell: `$env:SYNC2ACT_SMOKE_TEST_DIR='tmp/release-check'`).
+This opt-in diagnostic writes GUI screenshots and a `result.json`, tests native
+Parquet/video bindings, and compares uninterrupted versus resumed training and
+best-checkpoint selection on CPU and on CUDA when available. Remove the variable
+afterward with `Remove-Item Env:SYNC2ACT_SMOKE_TEST_DIR` to launch normally.
+The ZIP is a portable application: extract the whole folder before running the
+executable. Keep `_internal` beside it. User datasets and models are not bundled.
 
 At runtime, the packaged CUDA build uses an available NVIDIA GPU when compatible CUDA drivers are present; otherwise the application reports CPU. Prebuilt archives, when published, belong on the repository's [Releases page](https://github.com/33Geniusss/Sync2Act/releases), not in Git history.
 

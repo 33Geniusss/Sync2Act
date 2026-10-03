@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -25,5 +26,11 @@ def capture(path: str) -> int:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    smoke_directory = os.environ.get("SYNC2ACT_SMOKE_TEST_DIR")
+    if smoke_directory:
+        from release_smoke import run_release_check
+
+        raise SystemExit(run_release_check(smoke_directory))
     capture_path = os.environ.get("SYNC2ACT_CAPTURE_PATH")
     raise SystemExit(capture(capture_path) if capture_path else main())
