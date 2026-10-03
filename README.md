@@ -152,6 +152,53 @@ runner rejects training over a study created with a different code fingerprint
 or protocol. Rebuilding an existing report with `--report-only --output <old-dir>`
 continues to use its saved configuration.
 
+Checkpoint **schema 3** separates recovery from model selection:
+
+| Artifact | Purpose |
+|---|---|
+| `checkpoint.pt` (or the GUI's descriptive filename) | Latest resumable training state |
+| `checkpoint.best.pt` (or `<GUI-name>.best.pt`) | Evaluation weights with the lowest completed-epoch validation loss |
+| `<checkpoint-stem>.config.json` | Resolved configuration and normalization |
+
+Latest checkpoints are saved before the first update, every completed epoch, on
+pause/stop, and every `checkpoint_interval_steps` updates (default 100; 0 disables
+only periodic saving). Writes use a flushed temporary file and atomic replacement.
+A crash may lose updates since the last successful save, but resume replays them.
+Best checkpoints are evaluation-only; ties keep the earlier epoch. Before the
+first validation completes there is no best checkpoint, so evaluation can only use
+the latest, unvalidated weights. GUI, demo, benchmark, and new study evaluation
+select the best checkpoint when available; their resume path remains the latest.
+Old report manifests continue to select their originally recorded checkpoint.
+
+Resume saves/restores Python, NumPy, CPU/CUDA Torch RNG states, the epoch sample
+permutation, sampler/loader generator state, next batch cursor, partial loss sums,
+optimizer, scheduler, completed history, elapsed training time, and best weights.
+Pausing mid-epoch does not validate, append a partial epoch, or advance the scheduler.
+Only processed batches advance the cursor, even when workers prefetch. Copying the
+latest file alone to a new directory is sufficient to reconstruct its best sibling.
+
+Resume verifies model/configuration, normalization, episode order and full training/
+validation tensor content (including images and quality annotations). Changed data,
+batch size, loss, seed, or other optimization settings are rejected. A fresh run
+does not overwrite an existing checkpoint. Legacy schema-2 checkpoints remain
+loadable for evaluation, but cannot provide exact resume because they lack this state.
+
+The default `resume_schedule: strict` keeps the original total epoch target and
+cosine schedule. To add epochs, explicitly choose `resume_schedule: restart` at a
+completed epoch boundary and supply a larger total `epochs`. This starts a new
+cosine schedule over the added/remaining epochs using the configured initial LR,
+while preserving optimizer moments and best-model history. It is a deliberate new
+schedule, not equivalent to having planned the longer run originally. Later resumes
+of that extended run use `strict`. `max_steps` is a global update cap; clear it or
+increase it beyond the saved step before resuming.
+
+Exact numerical comparisons require the same hardware/software and deterministic
+kernels. Tests exercise dropout and all three host RNGs, worker prefetch, repeated
+pauses, periodic-save recovery, best-weight preservation, and a CUDA comparison
+when CUDA is available. The current window dataset has deterministic fetching;
+future random worker-side augmentation would need its own resumable RNG design.
+These are small controlled tests, not a rerun of the historical 270 experiments.
+
 ```bash
 # Save a deterministically corrupted demo dataset
 sync2act corrupt --config configs/corruption/shift_2.yaml
@@ -159,7 +206,15 @@ sync2act corrupt --config configs/corruption/shift_2.yaml
 # Train and evaluate
 sync2act train --config configs/train/act_lite.yaml --output runs/act-lite
 sync2act evaluate --config configs/eval/default.yaml \
-  --checkpoint runs/act-lite/checkpoint.pt --output runs/act-lite/eval
+  --checkpoint runs/act-lite/checkpoint.best.pt --output runs/act-lite/eval
+
+# Continue a paused run with the same planned epochs and dataset
+sync2act train --config configs/train/act_lite.yaml --output runs/act-lite \
+  --resume runs/act-lite/checkpoint.pt
+
+# Explicitly extend a completed 5-epoch run to 10 epochs with a new cosine schedule
+sync2act train --config configs/train/act_lite.yaml --output runs/act-lite \
+  --resume runs/act-lite/checkpoint.pt --epochs 10 --resume-schedule restart
 
 # Small configurable benchmark
 sync2act benchmark --config configs/benchmark/mvp.yaml
@@ -194,13 +249,13 @@ Run a new full three-dataset, three-seed study with the shared YAML preset:
 ```bash
 python tools/run_real_dataset_study.py --skip-download --device cuda \
   --config configs/train/real_dataset_study.yaml \
-  --output runs/mixed_modality_damage_training_v2
+  --output runs/mixed_modality_damage_checkpoint_v3
 ```
 
 The preset selects all episodes/frames, 10 epochs, batch 256, horizon 8, seeds
 7/17/27, a fixed split seed of 7, and 16-frame mixture segments. CLI flags such as
 `--epochs 2 --act-batch-size 32` override the YAML for smaller runs. The script's
-default output is also `runs/mixed_modality_damage_training_v2`; without `--config`,
+default output is also `runs/mixed_modality_damage_checkpoint_v3`; without `--config`,
 its smaller development-run defaults remain available. The `study` block is
 specific to this matrix runner; `sync2act train` uses the synthetic `dataset` block.
 

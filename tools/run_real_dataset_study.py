@@ -29,7 +29,12 @@ from sync2act.evaluation import evaluate_policy
 from sync2act.paths import datasets_root
 from sync2act.policies import build_policy
 from sync2act.reporting.localization import english_text
-from sync2act.training import QUALITY_SCHEMA_VERSION, inspect_checkpoint, train_policy
+from sync2act.training import (
+    QUALITY_SCHEMA_VERSION,
+    inspect_checkpoint,
+    load_checkpoint,
+    train_policy,
+)
 from sync2act.training.setup import build_training_policy, prepare_training_episodes
 
 DATASETS = [
@@ -1056,19 +1061,20 @@ def run_study(args: argparse.Namespace) -> Path:
                         continue
                     if run_path.exists():
                         print(f"rerun invalid {run_path}: {reason}", flush=True)
-                    checkpoint_path = run_dir / "checkpoint.pt"
+                    checkpoint_path = run_dir / train_config["checkpoint_name"]
                     resumable, resume_reason, _ = inspect_checkpoint(
                         checkpoint_path,
                         expected_model=model,
                         experiment_signature=signature,
+                        require_resume=True,
                     )
                     resume_from = checkpoint_path if resumable else None
                     if resume_from is not None:
                         print(f"resume compatible checkpoint {checkpoint_path}", flush=True)
                     elif checkpoint_path.exists():
-                        print(
-                            f"ignore incompatible checkpoint {checkpoint_path}: {resume_reason}",
-                            flush=True,
+                        raise ValueError(
+                            f"Cannot resume {checkpoint_path}: {resume_reason}. "
+                            "Choose a new output directory to start a new study."
                         )
                     components = condition["components"]
                     if components is None:
@@ -1104,6 +1110,7 @@ def run_study(args: argparse.Namespace) -> Path:
                     )
                     payload = torch.load(result.checkpoint, map_location="cpu", weights_only=False)
                     stats = NormalizationStats.from_dict(payload["stats"])
+                    selected = load_checkpoint(result.evaluation_checkpoint, model)
                     metrics = evaluate_policy(
                         model,
                         clean_test,
@@ -1134,8 +1141,13 @@ def run_study(args: argparse.Namespace) -> Path:
                         "source_fingerprint": source_fingerprint,
                         "experiment_signature": signature,
                         "status": "complete",
-                        "checkpoint": result.checkpoint.name,
-                        "checkpoint_metadata": payload.get("metadata", {}),
+                        "checkpoint": result.evaluation_checkpoint.name,
+                        "resume_checkpoint": result.checkpoint.name,
+                        "checkpoint_selection": "best_validation_loss"
+                        if result.best_checkpoint
+                        else "latest_unvalidated",
+                        "checkpoint_metadata": selected.get("metadata", {}),
+                        "best_epoch": selected["epoch"],
                     }
                     _write_json_atomic(run_path, run)
                     runs.append(run)
@@ -1161,7 +1173,7 @@ def run_study(args: argparse.Namespace) -> Path:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
-        "--output", type=Path, default=Path("runs/mixed_modality_damage_training_v2")
+        "--output", type=Path, default=Path("runs/mixed_modality_damage_checkpoint_v3")
     )
     result.add_argument(
         "--config", type=Path, help="Shared model/training YAML; CLI options override it"

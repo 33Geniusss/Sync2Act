@@ -3,17 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
 from sync2act import __version__
 
-CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 3
 QUALITY_SCHEMA_VERSION = 2
+RESUME_STATE_VERSION = 1
 
 
 def _canonical_hash(value: Any) -> str:
@@ -70,6 +73,9 @@ def save_checkpoint(
     config: dict,
     stats: dict | None = None,
     history: list[dict] | None = None,
+    *,
+    resume_state: dict | None = None,
+    best: dict | None = None,
 ) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -83,11 +89,72 @@ def save_checkpoint(
         "config": config,
         "stats": stats,
         "history": history or [],
+        "checkpoint_kind": "last",
+        "resume_state": resume_state,
+        "best": best,
     }
+    return atomic_save(payload, target)
+
+
+def atomic_save(payload: dict, target: str | Path) -> Path:
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
-    torch.save(payload, temporary)
-    os.replace(temporary, target)
+    try:
+        with temporary.open("wb") as handle:
+            torch.save(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return target
+
+
+def best_checkpoint_path(last_path: str | Path) -> Path:
+    path = Path(last_path)
+    return path.with_name(f"{path.stem}.best.pt")
+
+
+def save_best_checkpoint(path, model, config, stats, best, history) -> Path:
+    """Export the selected weights. This artifact is intentionally evaluation-only."""
+    return atomic_save(
+        {
+            "metadata": checkpoint_metadata(model, config),
+            "model": best["model"],
+            "optimizer": None,
+            "scheduler": None,
+            "step": best["step"],
+            "epoch": best["epoch"],
+            "config": config,
+            "stats": stats,
+            "history": history[: best["epoch"] + 1],
+            "checkpoint_kind": "best",
+            "selection_metric": "validation_loss",
+            "selection_value": best["validation_loss"],
+            "resume_state": None,
+        },
+        path,
+    )
+
+
+def capture_rng_state(device: torch.device) -> dict:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if device.type == "cuda" else [],
+    }
+
+
+def restore_rng_state(state: dict, device: torch.device) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if device.type == "cuda":
+        if len(state["cuda"]) != torch.cuda.device_count():
+            raise ValueError("CUDA device count changed; exact RNG restoration is unavailable")
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["cuda"]])
 
 
 def inspect_checkpoint(
@@ -95,6 +162,7 @@ def inspect_checkpoint(
     *,
     expected_model: torch.nn.Module | None = None,
     experiment_signature: str | None = None,
+    require_resume: bool = False,
 ) -> tuple[bool, str, dict | None]:
     target = Path(path)
     if not target.is_file():
@@ -104,7 +172,7 @@ def inspect_checkpoint(
     except (OSError, RuntimeError, EOFError, ValueError) as error:
         return False, f"checkpoint cannot be read: {error}", None
     metadata = payload.get("metadata") or {}
-    if metadata.get("checkpoint_schema_version") != CHECKPOINT_SCHEMA_VERSION:
+    if metadata.get("checkpoint_schema_version") not in {2, CHECKPOINT_SCHEMA_VERSION}:
         return False, "checkpoint schema version does not match", payload
     if metadata.get("quality_schema_version") != QUALITY_SCHEMA_VERSION:
         return False, "quality schema version does not match", payload
@@ -117,6 +185,11 @@ def inspect_checkpoint(
         and metadata.get("experiment_signature") != experiment_signature
     ):
         return False, "experiment signature does not match", payload
+    if require_resume and (
+        payload.get("checkpoint_kind") != "last"
+        or (payload.get("resume_state") or {}).get("version") != RESUME_STATE_VERSION
+    ):
+        return False, "checkpoint lacks exact-resume state; evaluation only", payload
     return True, "compatible", payload
 
 

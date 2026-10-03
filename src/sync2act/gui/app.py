@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self.episodes = []
         self.current_model = None
         self.last_checkpoint: Path | None = None
+        self.evaluation_checkpoint: Path | None = None
         self.last_metrics: dict | None = None
         self.current_stats: NormalizationStats | None = None
         self.thread: QThread | None = None
@@ -665,6 +666,12 @@ class MainWindow(QMainWindow):
         self.grad_clip_spin.setDecimals(2)
         self.grad_clip_spin.setValue(defaults["grad_clip"])
         self.grad_clip_spin.setToolTip("0 disables gradient clipping")
+        self.resume_schedule_combo = QComboBox()
+        self.resume_schedule_combo.addItems(["strict", "restart"])
+        self.resume_schedule_combo.setToolTip(
+            "strict preserves the saved schedule and epoch target. restart allows a larger "
+            "epoch target at a completed epoch boundary, starting a new cosine schedule."
+        )
 
         parameters = [
             ("Model", self.model_combo, "Recommended: compare all three"),
@@ -678,6 +685,7 @@ class MainWindow(QMainWindow):
             ("Loss", self.loss_combo, "Recommended: BC MSE; ACT Smooth L1"),
             ("Seed", self.seed_spin, "Recommended: 7; report at least 3 seeds"),
             ("Gradient clip", self.grad_clip_spin, "Recommended: ACT 1.0; 0 disables"),
+            ("Resume schedule", self.resume_schedule_combo, "Restart only when adding epochs"),
         ]
         for index, (label, widget, recommendation) in enumerate(parameters):
             row, group = divmod(index, 2)
@@ -966,6 +974,7 @@ class MainWindow(QMainWindow):
         self.current_model = None
         self.current_stats = None
         self.last_checkpoint = None
+        self.evaluation_checkpoint = None
         self.last_metrics = None
         self.model_test_episodes = []
         self.download_button.setEnabled(True)
@@ -1399,6 +1408,7 @@ class MainWindow(QMainWindow):
             "loss": self.loss_combo.currentText(),
             "seed": self.seed_spin.value(),
             "grad_clip": self.grad_clip_spin.value(),
+            "resume_schedule": self.resume_schedule_combo.currentText(),
             "device": (
                 ("cuda" if torch.cuda.is_available() else "cpu")
                 if self.device_combo.currentText() == "auto"
@@ -1428,7 +1438,18 @@ class MainWindow(QMainWindow):
             return
         model_config, training_config = self._training_configs()
         resume_path = self.last_checkpoint if resume else None
+        if resume and resume_path is None:
+            QMessageBox.information(self, "No resume checkpoint", "Choose a latest checkpoint with resume state.")
+            return
         if resume_path is not None:
+            try:
+                saved = torch.load(resume_path, map_location="cpu", weights_only=False)
+            except (OSError, RuntimeError, ValueError) as exc:
+                QMessageBox.critical(self, "Checkpoint load failed", str(exc))
+                return
+            # Structural parameters are not editable in the training controls.
+            model_config = saved["config"]["model"]
+            training_config = {**saved["config"], **training_config, "model": model_config}
             output = resume_path.parent
             training_config["checkpoint_name"] = resume_path.name
         else:
@@ -1438,6 +1459,7 @@ class MainWindow(QMainWindow):
             checkpoint = new_model_checkpoint_path(model_config["name"], data_condition)
             output = checkpoint.parent
             training_config["checkpoint_name"] = checkpoint.name
+        self.pending_checkpoint = output / training_config["checkpoint_name"]
         self.thread = QThread(self)
         self.worker = TrainingWorker(
             self.training_episodes,
@@ -1496,19 +1518,26 @@ class MainWindow(QMainWindow):
 
     def on_training_finished(self, model, result):
         self.current_model, self.last_checkpoint = model, result.checkpoint
-        payload = torch.load(result.checkpoint, map_location="cpu", weights_only=False)
+        self.evaluation_checkpoint = result.evaluation_checkpoint
+        payload = load_checkpoint(result.evaluation_checkpoint, model)
         self.current_stats = NormalizationStats.from_dict(payload["stats"])
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.resume_button.setEnabled(True)
+        self.resume_schedule_combo.setCurrentText("strict")
         self.overview_values["status"].setText("Stopped" if result.stopped else "Complete")
         self.training_status.append(
-            f"Checkpoint: {result.checkpoint} ({result.training_seconds:.2f}s)"
+            f"Resume: {result.checkpoint}\nEvaluate: {result.evaluation_checkpoint}"
+            f" ({result.training_seconds:.2f}s total training)"
         )
 
     def on_training_failed(self, details):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        pending = getattr(self, "pending_checkpoint", None)
+        if pending is not None and pending.is_file():
+            self.last_checkpoint = pending
+            self.resume_button.setEnabled(True)
         self.overview_values["status"].setText("Error")
         self.training_status.setPlainText(details)
         QMessageBox.critical(self, "Training failed", details.splitlines()[-1])
@@ -1540,7 +1569,18 @@ class MainWindow(QMainWindow):
                 )
                 comparisons[Path(path).name] = metrics
                 self.current_model, self.current_stats = model, stats
-                self.last_checkpoint = Path(path)
+                self.evaluation_checkpoint = Path(path)
+                candidate = Path(path)
+                if payload.get("checkpoint_kind") == "best" and candidate.name.endswith(".best.pt"):
+                    candidate = candidate.with_name(candidate.name.removesuffix(".best.pt") + ".pt")
+                resumable = candidate.is_file() and bool(torch.load(
+                    candidate, map_location="cpu", weights_only=False
+                ).get("resume_state"))
+                self.last_checkpoint = candidate if resumable else None
+                self.resume_button.setEnabled(resumable)
+                if resumable:
+                    latest = torch.load(candidate, map_location="cpu", weights_only=False)
+                    self._restore_training_controls(latest["config"])
                 self.model_test_episodes = evaluation_episodes
                 index = self.model_combo.findText(model_config["name"])
                 if index >= 0:
@@ -1550,6 +1590,25 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(4)
         except Exception as exc:
             QMessageBox.critical(self, "Checkpoint load failed", str(exc))
+
+    def _restore_training_controls(self, config):
+        controls = {
+            "epochs": self.epochs_spin, "batch_size": self.batch_size_spin,
+            "learning_rate": self.learning_rate_spin, "weight_decay": self.weight_decay_spin,
+            "validation_split": self.validation_split_spin, "test_split": self.test_split_spin,
+            "seed": self.seed_spin, "grad_clip": self.grad_clip_spin,
+        }
+        for key, control in controls.items():
+            control.blockSignals(True)
+            control.setValue(config[key])
+            control.blockSignals(False)
+        self.device_combo.setCurrentText(config["device"])
+        self.loss_combo.setCurrentText(config["loss"])
+        self.resume_schedule_combo.setCurrentText("strict")
+        corruption = config.get("corruption")
+        if corruption is None or isinstance(corruption, dict):
+            self.active_corruption_config = corruption
+        self._rebuild_episode_partitions()
 
     def evaluate_latest(self):
         if self.current_model is None:

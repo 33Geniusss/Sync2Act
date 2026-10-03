@@ -366,3 +366,50 @@ def test_background_training_keeps_event_loop_responsive(qtbot, tmp_path, monkey
     qtbot.waitUntil(lambda: not window.thread.isRunning(), timeout=30000)
     assert window.last_checkpoint.exists()
     window.close()
+
+
+def test_gui_resumes_partial_epoch_and_selects_best_for_evaluation(qtbot, tmp_path):
+    import torch
+
+    from sync2act.gui.worker import TrainingWorker
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.original_episodes = generate_demo_episodes(num_episodes=6, length=8, image_size=8)
+    window.episodes = list(window.original_episodes)
+    window._rebuild_episode_partitions()
+    window.device_combo.setCurrentText("cpu")
+    window.epochs_spin.setValue(2)
+    window.batch_size_spin.setValue(8)
+    model_config, config = window._training_configs()
+    worker = TrainingWorker(
+        window.training_episodes, model_config, config, tmp_path,
+        validation_episodes=window.validation_episodes,
+        normalization_stats=window.clean_training_stats,
+    )
+    errors = []
+    worker.failed.connect(errors.append)
+    worker.progress.connect(lambda event: worker.stop() if event["step"] == 1 else None)
+    worker.finished.connect(window.on_training_finished)
+    worker.run()
+    assert not errors
+    latest = window.last_checkpoint
+    partial = torch.load(latest, weights_only=False)
+    assert partial["resume_state"]["next_batch"] == 1
+    assert partial["history"] == []
+    assert window.evaluation_checkpoint == latest
+
+    window.start_training(resume=True)
+    qtbot.waitUntil(lambda: not window.thread.isRunning(), timeout=30000)
+    assert window.overview_values["status"].text() == "Complete", window.training_status.toPlainText()
+    payload = torch.load(latest, weights_only=False)
+    assert len(payload["history"]) == 2
+    assert payload["resume_state"]["status"] == "complete"
+    assert window.last_checkpoint == latest
+    assert window.evaluation_checkpoint != latest
+    selected = torch.load(window.evaluation_checkpoint, weights_only=False)
+    assert selected["checkpoint_kind"] == "best"
+    assert selected["selection_value"] == min(row["validation_loss"] for row in payload["history"])
+    for name, value in window.current_model.state_dict().items():
+        assert torch.equal(value.cpu(), selected["model"][name].cpu())
+    window.close()

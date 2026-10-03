@@ -32,6 +32,17 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--config", required=True)
     train.add_argument("--output", default="runs/train")
     train.add_argument("--resume")
+    train.add_argument("--epochs", type=int, help="Override total planned epochs")
+    train.add_argument(
+        "--resume-schedule",
+        choices=["strict", "restart"],
+        help="Restart cosine only when adding epochs at a completed epoch boundary",
+    )
+    train.add_argument(
+        "--checkpoint-interval-steps",
+        type=int,
+        help="Periodic latest checkpoint interval; 0 disables periodic saves",
+    )
     evaluate = subparsers.add_parser("evaluate", help="Evaluate a checkpoint offline")
     evaluate.add_argument("--config", required=True)
     evaluate.add_argument("--checkpoint", required=True)
@@ -70,12 +81,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Saved {len(episodes)} corrupted episodes to {target}")
     elif args.command == "train":
         config = resolve_training_config(
-            load_config(args.config), source=str(Path(args.config).resolve())
+            load_config(args.config),
+            source=str(Path(args.config).resolve()),
+            training_overrides={
+                key: getattr(args, key)
+                for key in ("epochs", "resume_schedule", "checkpoint_interval_steps")
+                if getattr(args, key) is not None
+            },
+            override_source="CLI",
         )
         _, _, result = run_training(
             config, args.output, lambda event: print(json.dumps(event)), resume_from=args.resume
         )
         print(f"Checkpoint: {result.checkpoint}")
+        print(f"Evaluation checkpoint: {result.evaluation_checkpoint}")
     elif args.command == "evaluate":
         metrics = run_evaluation(load_config(args.config), args.checkpoint, args.output)
         print(json.dumps(metrics, indent=2))

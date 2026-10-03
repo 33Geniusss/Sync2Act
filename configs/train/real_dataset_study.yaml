@@ -20,6 +20,8 @@ training:
   test_split: 0.1
   split_seed: 7
   num_workers: 0
+  checkpoint_interval_steps: 100
+  resume_schedule: strict
 study:
   seeds: [7, 17, 27]
   episode_limit: null

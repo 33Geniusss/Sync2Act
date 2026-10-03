@@ -31,7 +31,7 @@ def test_bc_training_and_resume(tmp_path):
     resumed = train_policy(
         restored,
         episodes,
-        {**config, "epochs": 3, "max_steps": None},
+        {**config, "epochs": 3, "max_steps": None, "resume_schedule": "restart"},
         tmp_path / "second",
         resume_from=result.checkpoint,
     )
@@ -164,10 +164,18 @@ def test_resume_reuses_checkpoint_statistics(tmp_path):
         state_anomaly(episode, mode="spike", probability=1.0, magnitude=100.0, seed=index)
         for index, episode in enumerate(clean)
     ]
+    with pytest.raises(ValueError, match="data changed"):
+        train_policy(
+            BCMLP(6, 3, hidden_dim=16),
+            corrupted,
+            {**config, "max_steps": None},
+            tmp_path / "changed",
+            resume_from=first.checkpoint,
+        )
     resumed = train_policy(
         BCMLP(6, 3, hidden_dim=16),
-        corrupted,
-        {**config, "epochs": 2, "max_steps": None},
+        clean,
+        {**config, "max_steps": None},
         tmp_path / "resumed",
         resume_from=first.checkpoint,
     )

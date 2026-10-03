@@ -78,6 +78,7 @@ def run_training(
         validation_episodes=prepared.validation,
         normalization_stats=prepared.stats,
     )
+    load_checkpoint(result.evaluation_checkpoint, model)
     # Callers evaluate only the clean held-out partition, using checkpoint statistics.
     return model, prepared.test, result
 
@@ -120,7 +121,11 @@ def run_demo(
         "corruption": "clean",
         "seed": 7,
         "config": payload["config"],
-        "checkpoint": str(training.checkpoint),
+        "checkpoint": str(training.evaluation_checkpoint),
+        "resume_checkpoint": str(training.checkpoint),
+        "checkpoint_selection": "best_validation_loss"
+        if training.best_checkpoint
+        else "latest_unvalidated",
         "metrics": metrics,
     }
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
@@ -163,6 +168,11 @@ def run_benchmark(config: dict, output_root: str | Path) -> list[dict]:
                     "corruption": corruption.get("name", "clean"),
                     "seed": seed,
                     "config": payload["config"],
+                    "checkpoint": str(training.evaluation_checkpoint),
+                    "resume_checkpoint": str(training.checkpoint),
+                    "checkpoint_selection": "best_validation_loss"
+                    if training.best_checkpoint
+                    else "latest_unvalidated",
                     "metrics": metrics,
                 }
                 (output_root / run_name / "run.json").write_text(

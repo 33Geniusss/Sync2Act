@@ -30,6 +30,8 @@ TRAINING_DEFAULTS = {
     "num_workers": 0,
     "max_steps": None,
     "checkpoint_name": "checkpoint.pt",
+    "checkpoint_interval_steps": 100,
+    "resume_schedule": "strict",
 }
 TRAINING_PROTOCOL_VERSION = 2
 
@@ -135,6 +137,11 @@ def resolve_training_config(
         raise ValueError("training.loss must be mse or smooth_l1")
     if training["quality_transform"] not in {"identity", "constant", "shuffled"}:
         raise ValueError("Unknown quality_transform")
+    if training["resume_schedule"] not in {"strict", "restart"}:
+        raise ValueError("resume_schedule must be strict or restart")
+    interval = training["checkpoint_interval_steps"]
+    if int(interval) != interval or interval < 0:
+        raise ValueError("checkpoint_interval_steps must be a non-negative integer")
     for key in ("epochs", "batch_size", "horizon"):
         if int(training[key]) != training[key] or training[key] < 1:
             raise ValueError(f"training.{key} must be a positive integer")

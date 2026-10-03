@@ -52,3 +52,10 @@ class EpochLossAccumulator:
         if self.totals is None:
             return 0.0, 0.0, 0.0
         return tuple(float(value) for value in LossSums(*self.totals).means(lambda_smooth))
+
+    def state_dict(self) -> dict:
+        return {"totals": None if self.totals is None else self.totals.detach().cpu().clone()}
+
+    def load_state_dict(self, state: dict, device: torch.device) -> None:
+        totals = state["totals"]
+        self.totals = None if totals is None else totals.to(device).clone()

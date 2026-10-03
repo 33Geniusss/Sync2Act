@@ -219,6 +219,11 @@ def test_study_yaml_cli_overrides_and_real_training_roundtrip(tmp_path, monkeypa
         payload = torch.load(path.parent / "checkpoint.pt", weights_only=False)
         assert payload["config"] == run["training_config"]
         cfg = payload["config"]
+        assert run["checkpoint"] == "checkpoint.best.pt"
+        assert run["resume_checkpoint"] == "checkpoint.pt"
+        selected = torch.load(path.parent / run["checkpoint"], weights_only=False)
+        assert selected["checkpoint_kind"] == "best"
+        assert run["checkpoint_selection"] == "best_validation_loss"
         assert cfg["epochs"] == 1 and cfg["batch_size"] == 4
         assert cfg["horizon"] == 3 and cfg["model"]["hidden_dim"] == 16
         assert cfg["learning_rate"] == 0.0007

@@ -66,7 +66,7 @@ def test_checkpoint_roundtrip_outputs_match(tmp_path):
     restored = BCMLP(6, 3)
     payload = load_checkpoint(path, restored)
     assert payload["step"] == 4
-    assert payload["metadata"]["checkpoint_schema_version"] == 2
+    assert payload["metadata"]["checkpoint_schema_version"] == 3
     compatible, reason, _ = inspect_checkpoint(path, expected_model=restored)
     assert compatible, reason
     assert torch.equal(expected, restored(state).detach())
