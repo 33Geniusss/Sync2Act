@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -63,6 +64,45 @@ def _prediction_metrics(prediction, target, episode_ids, steps) -> dict:
     }
 
 
+def _evaluation_batches(episodes, stats, batch_size):
+    """Slice recorded tensors in batches; evaluation only consumes action[t].
+
+    Preserve the original episode/frame order and cross-episode batch boundaries.
+    This avoids constructing unused padded future-label windows for every frame.
+    """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    fields = {"image": "observation.image", "image_quality": "image_quality",
+              "image_missing": "image_missing_mask", "image_time_offset": "image_time_offset"}
+    scalar_fields = {"state_quality": "state_quality", "state_missing": "state_missing_mask",
+                     "state_time_offset": "state_time_offset", "missing": "missing_mask",
+                     "time_offset": "time_offset"}
+    parts, pending = [], 0
+    for index, episode in enumerate(episodes):
+        for start in range(0, len(episode["action"]), batch_size):
+            # Split again if the previous episode left a partial batch.
+            end = min(start + batch_size, len(episode["action"]))
+            cursor = start
+            while cursor < end:
+                count = min(batch_size - pending, end - cursor)
+                selection = slice(cursor, cursor + count)
+                part = {key: episode[source][selection] for key, source in fields.items()}
+                part.update({key: episode[source][selection].reshape(-1, 1)
+                             for key, source in scalar_fields.items()})
+                part["state"] = (episode["observation.state"][selection] - stats.state_mean) / stats.state_std
+                part["actions"] = ((episode["action"][selection] - stats.action_mean) / stats.action_std).unsqueeze(1)
+                part["episode_index"] = torch.full((count,), index, dtype=torch.long)
+                part["step"] = torch.arange(cursor, cursor + count)
+                parts.append(part)
+                pending += count
+                cursor += count
+                if pending == batch_size:
+                    yield {key: torch.cat([p[key] for p in parts]) for key in part}
+                    parts, pending = [], 0
+    if parts:
+        yield {key: torch.cat([p[key] for p in parts]) for key in parts[0]}
+
+
 def evaluate_policy(
     model: torch.nn.Module,
     episodes: list[Episode],
@@ -73,6 +113,10 @@ def evaluate_policy(
     *,
     temporal_decay: float | None = None,
     save_action_chunks: bool = False,
+    frame_groups: dict[str, torch.Tensor] | None = None,
+    stop_event=None,
+    progress: Callable[[dict], None] | None = None,
+    vectorized_batches: bool = False,
 ) -> dict:
     """Evaluate first-step actions, or causal temporal fusion with a paired baseline.
 
@@ -86,11 +130,16 @@ def evaluate_policy(
     model = model.to(device).eval()
     horizon = getattr(model, "horizon", 1)
     dataset = EpisodeWindowDataset(episodes, horizon=horizon, stats=stats)
-    loader = DataLoader(dataset, batch_size=batch_size, pin_memory=str(device).startswith("cuda"))
+    loader = (
+        _evaluation_batches(episodes, dataset.stats, batch_size) if vectorized_batches else
+        DataLoader(dataset, batch_size=batch_size, pin_memory=str(device).startswith("cuda"))
+    )
     predictions, targets, episode_ids, steps, latencies = [], [], [], [], []
     chunks = []
     with torch.no_grad():
         for batch in loader:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Evaluation cancelled")
             image = batch["image"].to(device, non_blocking=True)
             if image.dtype == torch.uint8:
                 image = image.float().div_(255.0)
@@ -128,6 +177,8 @@ def evaluate_policy(
             )
             episode_ids.extend(batch["episode_index"].tolist())
             steps.extend(batch["step"].tolist())
+            if progress:
+                progress({"frames": len(steps), "total_frames": len(dataset)})
     prediction = torch.cat(predictions)
     target = torch.cat(targets)
     first_step = prediction
@@ -149,6 +200,19 @@ def evaluate_policy(
         "latency_p95_ms": float(torch.quantile(latency, 0.95)),
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
     }
+    if frame_groups is not None:
+        metrics["frame_groups"] = {}
+        for name, mask in frame_groups.items():
+            mask = torch.as_tensor(mask, dtype=torch.bool).cpu()
+            if mask.shape != (len(prediction),):
+                raise ValueError("Frame group mask must match evaluation frame ordering")
+            count = int(mask.sum())
+            error = prediction[mask] - target[mask]
+            metrics["frame_groups"][name] = {
+                "frames": count,
+                "action_mse": float(error.square().mean()) if count else None,
+                "action_mae": float(error.abs().mean()) if count else None,
+            }
     if temporal_decay is not None:
         metrics.update(
             {

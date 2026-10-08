@@ -28,6 +28,43 @@ Use a TeX installation with XeLaTeX, CTeX, PGFPlots, and the packages declared b
 
 ## Before publishing
 
+### Complete training and test corruption report v1_4_0
+
+Generate the integrated bilingual report from the complete v1_3_0 LaTeX sources
+and the completed local 4,158-evaluation study:
+
+```bash
+python tools/build_test_corruption_latex_report.py
+cd output/pdf
+xelatex -interaction=nonstopmode -halt-on-error sync2act_test_time_corruption_report_v1_4_0.tex
+xelatex -interaction=nonstopmode -halt-on-error sync2act_test_time_corruption_report_v1_4_0_en.tex
+```
+
+Compile each source twice for stable PDF bookmarks. Both sources contain their
+own tables and PGFPlots coordinates, so an exported source can be compiled with
+XeLaTeX without the original dataset, checkpoints, or external image assets. The
+generator requires the completed study, its historical dataset manifests, and
+both v1_3_0 LaTeX sources in `output/pdf/`; it checks the evaluation counts, all
+270 baseline audit records, and the historical report's ten sections before writing.
+The source ZIP includes both languages, compilation instructions, input CSV/JSON
+snapshots, and SHA-256 provenance. Report generation does not change the application
+version; the Windows v1.4.0 packaging step is separate. The report has one research narrative: shared questions, datasets,
+models, fault protocols and metrics; training-quality results; test robustness;
+metadata and matched-condition comparisons; temporal ensembling; joint conclusions
+and reproducibility. Duplicate definitions and covers are merged. All historical
+quantitative results, plots, substantive conclusions, recommendations and source
+records are retained, with the full corrupted-test matrices in appendices.
+`tools/integrated_report.py` supplies the narrative and reuses measured tables and
+plot coordinates without recalculating historical results. Original v1_3_0 sources
+remain unchanged and are included in the ZIP with hashes. The old report remains
+available independently.
+
+The v1_4_0 LaTeX/PDF pairs, source ZIP and provenance are explicitly tracked under
+the otherwise ignored `output/pdf/` directory. Both language pairs are registered
+in `docs/language_pairs.json`. Additional generated files stay local.
+
+### Tracked documentation check
+
 ```bash
 python tools/check_documentation_languages.py
 ```

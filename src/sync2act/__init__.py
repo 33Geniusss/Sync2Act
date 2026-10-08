@@ -1,3 +1,3 @@
 """Sync2Act: data-quality experiments for robot imitation learning."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"

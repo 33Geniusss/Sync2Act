@@ -1,0 +1,29 @@
+{
+  "report_version": "1_4_0",
+  "source_study": "D:\\Study\\Master\\Sync2Act\\runs\\test_time_corruption_v1",
+  "evaluation_counts": {
+    "baseline": 270,
+    "main": 2430,
+    "metadata": 810,
+    "severity": 648
+  },
+  "baseline_audits_passed": 270,
+  "baseline_max_prediction_difference": 0.0,
+  "source_sha256": {
+    "summary.json": "7c51d33fea70635be84ffac9be1e38e1cd8fd7a7c3f865d32020d4ddf1230dfb",
+    "results.csv": "58aa85c1e6554468d9ccfc79a4404b53e333c9c7b67892a2b2e6d62e3c6a1f91",
+    "aggregate.csv": "3d59cfd2cf90d82cd756507773a81884849dfc407bd70107beb0d665dbcc97cf",
+    "quality_vs_act.csv": "773da0f54a9696560da8862601660d72c437692d2a4249a86c377e36cc77dada",
+    "metadata_comparison.csv": "12f33499f00313a3562d88d3c1560f9b096ad3fb4a8b88692103d4db555d2cb4"
+  },
+  "test_frames": {
+    "aloha_static_battery": 2400,
+    "koch_pick_place_1_lego": 3342,
+    "xarm_lift_medium": 2000
+  },
+  "historical_report_sha256": {
+    "sync2act_mixed_modality_damage_report_v1_3_0.tex": "d83d023b786fe4ed534f4e8ab02a3a0526f071e9a1cec51118090a875295661f",
+    "sync2act_mixed_modality_damage_report_v1_3_0_en.tex": "2072fbf3205407ee916bd3a1b06b9fce27bbc03b07b95b91dc791db9dc80de30"
+  },
+  "scope": "Integrated study: training quality, test robustness, metadata and temporal ensembling"
+}

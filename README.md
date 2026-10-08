@@ -17,6 +17,7 @@ the same experiment protocols, formulas, results, and limitations.
 
 | Document | English | Chinese |
 |---|---|---|
+| v1_4_0 integrated study: data quality and policy robustness | [PDF](output/pdf/sync2act_test_time_corruption_report_v1_4_0_en.pdf) / [LaTeX](output/pdf/sync2act_test_time_corruption_report_v1_4_0_en.tex) | [PDF](output/pdf/sync2act_test_time_corruption_report_v1_4_0.pdf) / [LaTeX](output/pdf/sync2act_test_time_corruption_report_v1_4_0.tex) |
 | Experiment report, including temporal ensembling | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.tex) | [PDF](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.pdf) / [LaTeX](output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.tex) |
 
 See the [language policy](docs/LANGUAGE_POLICY.md) for regeneration commands and
@@ -29,10 +30,10 @@ the language-pair check enforced by CI. Study HTML generators write both
 Original episodes
 ├─ Training episodes   → clean or deliberately corrupted
 ├─ Validation episodes → always clean
-└─ Test episodes       → always clean
+└─ Test episodes       → paired clean and corrupted observations
 ```
 
-The split is episode-level, preventing frames from one trajectory from leaking across partitions. Corruptions are applied only to the training partition. Formal corruption studies freeze normalization statistics computed from the clean training episodes and reuse them for every condition; model comparison uses held-out clean test episodes.
+The split is episode-level, preventing frames from one trajectory from leaking across partitions. Training corruption and test-observation corruption are configured separately. Formal studies freeze normalization statistics computed from the clean training episodes and reuse them for every condition. Test comparisons preserve original action targets and evaluate the same checkpoint on clean and corrupted copies of the held-out observations.
 
 ## Quick start from source
 
@@ -65,7 +66,7 @@ Launch with `sync2act-gui` or `python -m sync2act.gui`. The PySide6 window start
 - **Dataset Inspector:** RGB preview, episode/step totals, one shared state/action dimension selector, a separate quality plot, time-labelled axes, selected-step cursors, and original-versus-working-copy comparison.
 - **Corruption Studio:** type-aware target controls, deterministic-seed disabling, a live three-stream alignment diagram for temporal shifts, a dropped-frame timeline, and before/after action or state curves with exact frame-level original/new/delta values.
 - **Training Monitor:** BC-MLP, ACT-Lite, or Quality-Aware ACT in a background worker; editable device, epochs, batch size, learning rate, weight decay, validation split, loss, seed, and gradient clipping; recommended-value hints; estimated optimizer steps; live loss/LR/ETA; safe stop, checkpoint, and resume. New checkpoints are automatically named `<model>_<data-condition>_<timestamp>.pt` under `<application-folder>/models`.
-- **Evaluation & Compare:** checkpoint loading, offline metrics, per-episode results, and target/prediction trajectories.
+- **Evaluation & Compare:** checkpoint loading and background paired clean/damaged-test evaluation, offline metrics, per-episode results, and target/prediction trajectories. Configure image/state/mixed damage, causal delay, missing-segment fraction, camera, damage seed, and Oracle/unknown quality information; cancel between batches.
 - **Report:** HTML and JSON export containing configuration, seeds, dependency versions, timestamp, and Git commit when available.
 
 The Training Monitor estimates work before launch as:
@@ -83,7 +84,7 @@ The optional local Windows bundle can be rebuilt with:
 python -m pip install pyinstaller
 python -m PyInstaller --noconfirm Sync2Act.spec
 dist\Sync2Act\Sync2Act.exe
-python tools/package_windows_release.py --output release/Sync2Act-Windows-x64-v1.3.0.zip
+python tools/package_windows_release.py --output release/Sync2Act-Windows-x64-v1.4.0.zip
 ```
 
 For release verification, run the executable with `SYNC2ACT_SMOKE_TEST_DIR` set
@@ -123,6 +124,83 @@ flowchart LR
 The GUI and CLI call the same functions in `pipeline.py`, `training/`, `evaluation/`, and `reporting/`; there is no second training implementation hidden in the interface.
 
 ## Reproducible experiments
+
+### Corrupted test observations
+
+In **Evaluation & Compare**, choose a test condition and select **Compare clean / selected test**,
+or **Choose checkpoint** to compare saved models. Import the original dataset first. The
+checkpoint's recorded test split is required; historical study checkpoints can use the
+sibling `run.json`. Recorded dataset identity is checked when available. If historical
+loading settings differ (such as 64-pixel images), the worker reloads only the held-out
+episodes with those settings. Checkpoints without dataset provenance still require the
+user to supply the correct original dataset.
+
+This workflow clones the test observations and preserves action targets, timestamps,
+episode ordering, and frozen training normalization. It does not edit the source dataset
+or the training partition. Delays are positive past-frame offsets within an episode;
+unavailable boundary observations are masked. Missing inputs are zero placeholders.
+Fractions allocate **disjoint 16-frame segments**, rather than independent frame drops;
+mixed conditions divide each damage fraction equally between image and state. Actual
+frame proportions and time offsets in milliseconds are saved in `corruption.json`.
+Camera indices are zero-based; **All cameras** affects every view.
+
+**Known damage (Oracle)** supplies the true synthetic observation-quality metadata.
+**Unknown damage** supplies normal quality metadata for the exact same damaged inputs.
+Neither mode detects quality automatically. Action-label quality is not used to weight
+test metrics. MSE/MAE use every original test target; affected and unaffected segment
+metrics are also saved. Ratios use the same checkpoint's clean-test MSE; a zero
+denominator is reported as undefined. The plot displays the first test episode to avoid
+joining unrelated trajectories. Long comparisons run in a worker and can be cancelled.
+
+Each GUI comparison gets its own timestamped directory under `runs/gui/test-evaluation/`
+with clean/test predictions, per-episode metrics, damage manifests, and `comparison.json`.
+The **Report** tab exports both sides with the checkpoint hash, split, normalization,
+damage parameters, and quality-information mode.
+
+For the historical 270-checkpoint study:
+
+```bash
+python -m pip install -e .[study]
+
+# 22-evaluation preflight; use a separate output directory for the pilot
+python tools/evaluate_test_corruption_study.py --pilot --device cuda --output runs/test_time_corruption_pilot
+
+# Full study; same command resumes matching completed evaluations
+python tools/evaluate_test_corruption_study.py --device cuda
+
+# Verify saved artifact hashes and regenerate both report languages
+python tools/evaluate_test_corruption_study.py --report-only
+```
+
+The full matrix contains 4,158 evaluations: 270 clean historical-baseline audits;
+2,430 medium-severity Oracle tests (three conditions, three independent damage seeds);
+810 unknown-metadata tests for `quality_input` and `quality_full`; and 648 light/heavy
+tests for ACT-Lite and full Quality-Aware ACT trained on clean or mixed demonstrations.
+Every model in an Oracle test receives true observation metadata, including models
+originally trained with constant/shuffled quality controls. The separate unknown tests
+isolate inference-time metadata availability on the same checkpoint.
+
+| Severity | Delay | Image/state: delayed / missing fractions | Mixed: delayed / missing fractions |
+|---|---:|---:|---:|
+| Light | 1 frame | 0.20 / 0.05 | 0.30 / 0.10 |
+| Medium | 2 frames | 0.40 / 0.10 | 0.60 / 0.20 |
+| Heavy | 4 frames | 0.60 / 0.20 | 0.70 / 0.30 |
+
+These presets jointly vary delay and damaged fraction; they are not single-factor
+sensitivity estimates. Test damage seeds are 107, 117, and 127, separate from historical
+training seeds 7, 17, and 27. All checkpoints share the same damaged samples for each
+dataset/condition/seed. Reports first average damage seeds within each training seed,
+then average training seeds, and report the two sources of variation separately.
+Absolute MSE is kept separate by dataset. No test result is used to select model weights.
+
+Results are written to `runs/test_time_corruption_v1/`: bilingual `report.html` /
+`report_en.html`, per-evaluation `results.csv`, aggregated `aggregate.csv`, paired
+`quality_vs_act.csv` and `metadata_comparison.csv`, and hash-verified evaluation artifacts.
+Changed source/data/checkpoints invalidate resume; use a new output directory.
+Historical training results are preserved. This remains **offline prediction robustness**,
+not a robot rollout or a task-success measurement.
+
+### Training protocol and checkpoint recovery
 
 YAML, the GUI, and the real-dataset runner now use the same configuration resolver
 in `src/sync2act/config.py`. Explicit configuration values override shared defaults;

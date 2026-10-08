@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -42,16 +45,17 @@ from sync2act.config import resolve_training_config, save_config
 from sync2act.corruptions import apply_corruption
 from sync2act.data.dataset import NormalizationStats
 from sync2act.data.episode import ensure_modal_quality
-from sync2act.evaluation import evaluate_policy
+from sync2act.evaluation.test_corruption import TestCorruptionConfig, preset_config
 from sync2act.paths import default_dataset_path, models_root, new_model_checkpoint_path
 from sync2act.policies import build_policy
 from sync2act.reporting import generate_report
 from sync2act.training import load_checkpoint
 from sync2act.training.setup import prepare_training_episodes
 
-from .worker import DatasetDownloadWorker, DatasetLoadWorker, TrainingWorker
+from .worker import DatasetDownloadWorker, DatasetLoadWorker, EvaluationWorker, TrainingWorker
 
 METRIC_HELP = {
+    "mse_ratio_to_clean_test": "Selected test MSE divided by the same checkpoint clean-test MSE. Above 1 means degradation; undefined for a zero baseline.",
     "evaluation_scope": (
         "Evaluation scope. 'offline-only' means predictions are compared with recorded "
         "test-set actions without running a robot or simulator."
@@ -218,6 +222,10 @@ class MainWindow(QMainWindow):
         self.download_worker: DatasetDownloadWorker | None = None
         self.load_thread: QThread | None = None
         self.load_worker: DatasetLoadWorker | None = None
+        self.eval_thread: QThread | None = None
+        self.eval_worker: EvaluationWorker | None = None
+        self.last_evaluations: list[dict] = []
+        self.model_test_indices: list[int] = []
         self.dataset_metadata: dict = {}
         self.active_corruption_config: dict | None = None
         self.episode_split: dict[str, list[int]] = {
@@ -749,26 +757,80 @@ class MainWindow(QMainWindow):
     def _build_evaluation(self):
         page, layout = self._page(
             "Evaluation & Compare",
-            "Compare offline prediction quality, smoothness, latency, and model size on the clean test set.",
+            "Compare the same model on clean and damaged test observations; original action targets stay fixed.",
         )
         buttons = QHBoxLayout()
-        evaluate = QPushButton("Evaluate latest checkpoint")
-        evaluate.clicked.connect(self.evaluate_latest)
+        self.evaluate_button = QPushButton("Compare clean / selected test")
+        self.evaluate_button.clicked.connect(self.evaluate_latest)
         choose = QPushButton("Choose checkpoint…")
         choose.setProperty("variant", "secondary")
         choose.clicked.connect(self.choose_checkpoint)
-        buttons.addWidget(evaluate)
+        self.choose_eval_button = choose
+        buttons.addWidget(self.evaluate_button)
         buttons.addWidget(choose)
+        self.cancel_eval_button = QPushButton("Cancel evaluation")
+        self.cancel_eval_button.setEnabled(False)
+        self.cancel_eval_button.clicked.connect(self.cancel_evaluation)
+        buttons.addWidget(self.cancel_eval_button)
         buttons.addStretch()
         layout.addLayout(buttons)
+        self.eval_settings = QGroupBox("Test observation quality")
+        form = QGridLayout(self.eval_settings)
+        self.eval_condition = QComboBox()
+        for label, value in [("Clean", "clean"), ("Image damage", "image"),
+                             ("State damage", "state"), ("Mixed image / state", "mixed")]:
+            self.eval_condition.addItem(label, value)
+        self.eval_shift = QSpinBox()
+        self.eval_shift.setRange(1, 1000)
+        self.eval_shift.setValue(2)
+        self.eval_delay_fraction = QDoubleSpinBox()
+        self.eval_missing_fraction = QDoubleSpinBox()
+        for control, value in [(self.eval_delay_fraction, 0.4), (self.eval_missing_fraction, 0.1)]:
+            control.setRange(0, 1)
+            control.setSingleStep(0.05)
+            control.setValue(value)
+        self.eval_seed = QSpinBox()
+        self.eval_seed.setRange(0, 2**31 - 1)
+        self.eval_seed.setValue(107)
+        self.eval_camera = QSpinBox()
+        self.eval_camera.setRange(-1, 100)
+        self.eval_camera.setSpecialValueText("All cameras")
+        self.eval_camera.setValue(-1)
+        self.eval_quality = QComboBox()
+        self.eval_quality.addItem("Known damage (Oracle)", "oracle")
+        self.eval_quality.addItem("Unknown damage", "unknown")
+        controls = [("Test condition", self.eval_condition), ("Delay (frames)", self.eval_shift),
+                    ("Delayed segment fraction", self.eval_delay_fraction),
+                    ("Missing segment fraction", self.eval_missing_fraction),
+                    ("Damage seed", self.eval_seed), ("Camera (zero-based)", self.eval_camera),
+                    ("Quality information", self.eval_quality)]
+        for i, (label, control) in enumerate(controls):
+            row, column = divmod(i, 4)
+            form.addWidget(QLabel(label), row * 2, column)
+            form.addWidget(control, row * 2 + 1, column)
+        note = QLabel("Fractions allocate separate 16-frame segments; mixed conditions divide each fraction equally between image and state. Offline evaluation only.")
+        note.setWordWrap(True)
+        form.addWidget(note, 4, 0, 1, 4)
+        self.eval_condition.currentIndexChanged.connect(self._eval_condition_changed)
+        self._eval_condition_changed()
+        layout.addWidget(self.eval_settings)
+        self.eval_status = QLabel("Choose a checkpoint or train a model, then compare test conditions.")
+        self.eval_status.setWordWrap(True)
+        layout.addWidget(self.eval_status)
         self.metrics_table = QTableWidget(0, 2)
+        self.metrics_table.setMinimumHeight(220)
         self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
         self._configure_metrics_table()
         layout.addWidget(self.metrics_table, 1)
         self.compare_plot = pg.PlotWidget(title="Prediction vs target (action[0])")
+        self.compare_plot.setMinimumHeight(200)
         self.compare_plot.addLegend()
         layout.addWidget(self.compare_plot, 1)
-        self.tabs.addTab(page, "Evaluation & Compare")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, "Evaluation & Compare")
 
     def _build_report(self):
         page, layout = self._page(
@@ -853,6 +915,8 @@ class MainWindow(QMainWindow):
             self.hf_target.setText(path)
 
     def start_dataset_download(self):
+        if self._evaluation_busy():
+            return
         if self.download_thread and self.download_thread.isRunning():
             return
         repo_id = self.hf_repo_id.text().strip()
@@ -936,6 +1000,8 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Dataset download failed", details.splitlines()[-1])
 
     def start_dataset_load(self):
+        if self._evaluation_busy():
+            return
         if self.load_thread and self.load_thread.isRunning():
             return
         target = self.hf_target.text().strip()
@@ -976,6 +1042,8 @@ class MainWindow(QMainWindow):
         self.last_checkpoint = None
         self.evaluation_checkpoint = None
         self.last_metrics = None
+        self.last_evaluations = []
+        self.model_test_indices = []
         self.model_test_episodes = []
         self.download_button.setEnabled(True)
         self.load_dataset_button.setEnabled(True)
@@ -1422,6 +1490,8 @@ class MainWindow(QMainWindow):
         return resolved["model"], resolved["training"]
 
     def start_training(self, checked=False, resume=False):
+        if self._evaluation_busy():
+            return
         if not self.episodes:
             QMessageBox.information(
                 self,
@@ -1471,6 +1541,7 @@ class MainWindow(QMainWindow):
             normalization_stats=self.clean_training_stats,
         )
         self.model_test_episodes = list(self.test_episodes)
+        self.model_test_indices = list(self.episode_split["test"])
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_training_progress)
@@ -1542,14 +1613,46 @@ class MainWindow(QMainWindow):
         self.training_status.setPlainText(details)
         QMessageBox.critical(self, "Training failed", details.splitlines()[-1])
 
+    def _eval_condition_changed(self, *_args):
+        condition = self.eval_condition.currentData()
+        config = preset_config(condition)
+        self.eval_delay_fraction.setValue(config.delay_fraction)
+        self.eval_missing_fraction.setValue(config.missing_fraction)
+        for control in (self.eval_shift, self.eval_delay_fraction, self.eval_missing_fraction,
+                        self.eval_seed, self.eval_quality):
+            control.setEnabled(condition != "clean")
+        self.eval_camera.setEnabled(condition in {"image", "mixed"})
+
+    def _test_corruption_config(self):
+        config = TestCorruptionConfig(
+            condition=self.eval_condition.currentData(), shift=self.eval_shift.value(),
+            delay_fraction=self.eval_delay_fraction.value(),
+            missing_fraction=self.eval_missing_fraction.value(), seed=self.eval_seed.value(),
+            camera_index=None if self.eval_camera.value() == -1 else self.eval_camera.value(),
+            quality_mode=self.eval_quality.currentData(),
+        )
+        config.validate()
+        return config
+
+    def _evaluation_busy(self):
+        return bool(self.eval_thread and self.eval_thread.isRunning())
+
     def choose_checkpoint(self):
+        if self._evaluation_busy():
+            return
+        if any(thread and thread.isRunning() for thread in (self.thread, self.load_thread, self.download_thread)):
+            QMessageBox.information(self, "Busy", "Wait for training or dataset loading to finish first.")
+            return
+        if not self.original_episodes:
+            QMessageBox.information(self, "No test dataset", "Import the checkpoint's original dataset first.")
+            return
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Choose checkpoint", str(models_root()), "PyTorch checkpoint (*.pt)"
         )
         if not paths:
             return
         try:
-            comparisons = {}
+            jobs = []
             for path in paths:
                 payload = torch.load(path, map_location="cpu", weights_only=False)
                 model_config = payload.get("config", {}).get("model")
@@ -1558,36 +1661,33 @@ class MainWindow(QMainWindow):
                 model = build_policy(model_config)
                 load_checkpoint(path, model)
                 stats = NormalizationStats.from_dict(payload["stats"])
-                saved_split = payload.get("config", {}).get("episode_split", {})
-                test_indices = saved_split.get("test", self.episode_split["test"])
-                evaluation_episodes = [self.original_episodes[index] for index in test_indices]
-                metrics = evaluate_policy(
-                    model,
-                    evaluation_episodes,
-                    stats=stats,
-                    output_dir=Path("runs/gui/comparisons") / Path(path).stem,
-                )
-                comparisons[Path(path).name] = metrics
+                split = payload.get("config", {}).get("episode_split")
+                manifest_path = Path(path).parent / "run.json"
+                if not split and manifest_path.exists():
+                    split = json.loads(manifest_path.read_text(encoding="utf-8")).get("split")
+                if not split or not split.get("test"):
+                    raise ValueError("Checkpoint has no recorded test split; its original run.json is required.")
+                indices = split["test"]
+                if any(i < 0 or i >= len(self.original_episodes) for i in indices):
+                    raise ValueError("Saved test split does not fit the loaded dataset")
+                evaluation_episodes = [self.original_episodes[i] for i in indices]
+                jobs.append(self._evaluation_job(model, stats, evaluation_episodes, Path(path), indices))
                 self.current_model, self.current_stats = model, stats
                 self.evaluation_checkpoint = Path(path)
                 candidate = Path(path)
                 if payload.get("checkpoint_kind") == "best" and candidate.name.endswith(".best.pt"):
                     candidate = candidate.with_name(candidate.name.removesuffix(".best.pt") + ".pt")
-                resumable = candidate.is_file() and bool(torch.load(
-                    candidate, map_location="cpu", weights_only=False
-                ).get("resume_state"))
-                self.last_checkpoint = candidate if resumable else None
-                self.resume_button.setEnabled(resumable)
-                if resumable:
-                    latest = torch.load(candidate, map_location="cpu", weights_only=False)
+                latest = torch.load(candidate, map_location="cpu", weights_only=False) if candidate.is_file() else {}
+                self.last_checkpoint = candidate if latest.get("resume_state") else None
+                self.resume_button.setEnabled(self.last_checkpoint is not None)
+                if self.last_checkpoint:
                     self._restore_training_controls(latest["config"])
                 self.model_test_episodes = evaluation_episodes
-                index = self.model_combo.findText(model_config["name"])
-                if index >= 0:
-                    self.model_combo.setCurrentIndex(index)
-            self.last_metrics = next(iter(comparisons.values()))
-            self._show_comparisons(comparisons)
-            self.tabs.setCurrentIndex(4)
+                self.model_test_indices = list(indices)
+                model_index = self.model_combo.findText(model_config["name"])
+                if model_index >= 0:
+                    self.model_combo.setCurrentIndex(model_index)
+            self._start_evaluation(jobs)
         except Exception as exc:
             QMessageBox.critical(self, "Checkpoint load failed", str(exc))
 
@@ -1610,42 +1710,141 @@ class MainWindow(QMainWindow):
             self.active_corruption_config = corruption
         self._rebuild_episode_partitions()
 
+    def _evaluation_job(self, model, stats, episodes, checkpoint, indices):
+        recorded_data = {}
+        if checkpoint:
+            payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+            recorded_data = payload.get("config", {}).get("dataset_config", {})
+            if not recorded_data.get("root"):
+                for parent in list(checkpoint.resolve().parents)[:5]:
+                    manifest_path = parent / "dataset_manifest.json"
+                    if manifest_path.is_file():
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        recorded_data = manifest["loaded_metadata"]
+                        break
+            if recorded_data.get("root"):
+                loaded_root = self.dataset_metadata.get("root")
+                if not loaded_root or Path(loaded_root).resolve() != Path(recorded_data["root"]).resolve():
+                    raise ValueError("Import the original dataset recorded by this checkpoint before evaluation")
+                for key in ("source_episodes", "state_dim", "action_dim", "image_keys"):
+                    if key in recorded_data and self.dataset_metadata.get(key) != recorded_data[key]:
+                        raise ValueError(f"Loaded dataset differs from checkpoint: {key}")
+        reload_spec = None
+        if recorded_data.get("root") and any(
+            recorded_data.get(key) != self.dataset_metadata.get(key)
+            for key in ("max_image_size", "episode_limit", "frames_per_episode_limit")
+        ):
+            reload_spec = recorded_data
+        return {"label": checkpoint.stem if checkpoint else "session", "model": model,
+                "stats": stats, "episodes": list(episodes),
+                "reload_spec": reload_spec,
+                "provenance": {"checkpoint": str(checkpoint) if checkpoint else None,
+                               "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest() if checkpoint else None,
+                               "test_episode_indices": list(indices),
+                               "dataset": recorded_data or dict(self.dataset_metadata)}}
+
     def evaluate_latest(self):
+        if self._evaluation_busy():
+            return
         if self.current_model is None:
-            QMessageBox.information(
-                self,
-                "No model",
-                "Train a model in this session before evaluation, or choose its checkpoint.",
-            )
+            QMessageBox.information(self, "No model", "Train a model or choose its checkpoint first.")
             return
         try:
-            self.last_metrics = evaluate_policy(
-                self.current_model,
-                self.model_test_episodes or self.test_episodes,
-                stats=self.current_stats,
-                output_dir="runs/gui/evaluation",
-            )
-            self._show_comparisons({"latest": self.last_metrics})
-            self.report_preview.setPlainText(json.dumps(self.last_metrics, indent=2))
-            self.overview_values["best"].setText(f"MSE {self.last_metrics['action_mse']:.4f}")
-            csv_path = Path("runs/gui/evaluation/predictions.csv")
-            if csv_path.exists():
-                import pandas as pd
-
-                frame = pd.read_csv(csv_path)
-                self.compare_plot.clear()
-                self.compare_plot.addLegend()
-                self.compare_plot.plot(frame["target_0"].to_numpy(), pen="#9da8c2", name="target")
-                self.compare_plot.plot(
-                    frame["prediction_0"].to_numpy(), pen="#3157d5", name="prediction"
-                )
-            self.tabs.setCurrentIndex(4)
+            self._start_evaluation([self._evaluation_job(
+                self.current_model, self.current_stats,
+                self.model_test_episodes or self.test_episodes, self.evaluation_checkpoint,
+                self.model_test_indices or self.episode_split["test"],
+            )])
         except Exception as exc:
             QMessageBox.critical(self, "Evaluation failed", str(exc))
 
+    def _start_evaluation(self, jobs):
+        if self._evaluation_busy():
+            return
+        if any(thread and thread.isRunning() for thread in (self.thread, self.load_thread, self.download_thread)):
+            raise ValueError("Wait for training or dataset loading to finish before evaluation")
+        config = self._test_corruption_config()
+        output = Path("runs/gui/test-evaluation") / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        self.eval_thread = QThread(self)
+        self.eval_worker = EvaluationWorker(jobs, config, output,
+                                            device=("cuda" if torch.cuda.is_available() else "cpu")
+                                            if self.device_combo.currentText() == "auto" else self.device_combo.currentText(),
+                                            batch_size=self.batch_size_spin.value())
+        self.eval_worker.moveToThread(self.eval_thread)
+        self.eval_thread.started.connect(self.eval_worker.run)
+        self.eval_worker.progress.connect(self._on_evaluation_progress)
+        self.eval_worker.finished.connect(self._on_evaluation_finished)
+        self.eval_worker.failed.connect(self._on_evaluation_failed)
+        self.eval_worker.cancelled.connect(self._on_evaluation_cancelled)
+        for signal in (self.eval_worker.finished, self.eval_worker.failed, self.eval_worker.cancelled):
+            signal.connect(self.eval_thread.quit)
+        self._eval_restore = [(control, control.isEnabled()) for control in
+                              (self.evaluate_button, self.choose_eval_button, self.eval_settings,
+                               self.start_button, self.resume_button, self.download_button, self.load_dataset_button)]
+        for control, _ in self._eval_restore:
+            control.setEnabled(False)
+        self.cancel_eval_button.setEnabled(True)
+        self.eval_thread.finished.connect(self._evaluation_idle)
+        self.eval_status.setText("Evaluating clean baseline, then selected test condition…")
+        self.tabs.setCurrentIndex(4)
+        self.eval_thread.start()
+
+    def _evaluation_idle(self):
+        for control, enabled in self._eval_restore:
+            control.setEnabled(enabled)
+        self.cancel_eval_button.setEnabled(False)
+
+    def cancel_evaluation(self):
+        if self.eval_worker:
+            self.eval_worker.stop_event.set()
+            self.eval_status.setText("Cancelling after the current batch…")
+
+    def _on_evaluation_progress(self, event):
+        self.eval_status.setText(f"Evaluating: {event['frames']:,} / {event['total_frames']:,} frames in current pass")
+
+    def _on_evaluation_cancelled(self):
+        self.eval_status.setText("Evaluation cancelled; incomplete comparisons are not exported.")
+
+    def _on_evaluation_failed(self, details):
+        self.eval_status.setText("Evaluation failed: " + details.splitlines()[-1])
+        QMessageBox.critical(self, "Evaluation failed", details.splitlines()[-1])
+
+    def _on_evaluation_finished(self, results):
+        import pandas as pd
+
+        self.last_evaluations = results
+        comparisons = {}
+        for i, result in enumerate(results):
+            label = f"{i + 1}. {result['label']}"
+            comparisons[f"{label} / clean"] = {**result["clean"], "mse_ratio_to_clean_test": 1.0}
+            comparisons[f"{label} / selected {result['test_config']['condition']}"] = result["test"]
+        self._show_comparisons(comparisons)
+        last = results[-1]
+        self.last_metrics = last["test"]
+        self.report_preview.setPlainText(json.dumps(results, indent=2))
+        self.overview_values["best"].setText(f"MSE {self.last_metrics['action_mse']:.4f}")
+        self.compare_plot.clear()
+        self.compare_plot.addLegend()
+        for condition, color in (("clean", "#3157d5"), ("test", "#d76b36")):
+            frame = pd.read_csv(Path(last["output_dir"]) / condition / "predictions.csv")
+            # Display one episode so plots never connect unrelated trajectories.
+            frame = frame[frame["episode"] == frame["episode"].iloc[0]]
+            if condition == "clean":
+                self.compare_plot.plot(frame["step"].to_numpy(), frame["target_0"].to_numpy(), pen="#9da8c2", name="target")
+            self.compare_plot.plot(frame["step"].to_numpy(), frame["prediction_0"].to_numpy(), pen=color, name=condition)
+        ratio = last["test"]["mse_ratio_to_clean_test"]
+        ratio_text = f"{ratio:.3f}x" if ratio is not None else "undefined"
+        self.eval_status.setText(
+            f"Completed {len(results)} paired comparison(s). Last MSE: {last['clean']['action_mse']:.6g} clean → "
+            f"{last['test']['action_mse']:.6g} selected ({ratio_text}). Saved to {Path(last['output_dir']).parent}"
+        )
+
     def _show_comparisons(self, comparisons):
         names = list(comparisons)
-        keys = [key for key in next(iter(comparisons.values())) if key != "per_episode"]
+        keys = [key for key, value in next(iter(comparisons.values())).items() if not isinstance(value, (list, dict))]
+        if "mse_ratio_to_clean_test" in keys:
+            keys.remove("mse_ratio_to_clean_test")
+            keys.insert(2, "mse_ratio_to_clean_test")
         self.metrics_table.setColumnCount(len(names) + 1)
         self.metrics_table.setHorizontalHeaderLabels(["Metric", *names])
         self._configure_metrics_table()
@@ -1673,7 +1872,7 @@ class MainWindow(QMainWindow):
                 self.metrics_table.setItem(
                     row,
                     column,
-                    QTableWidgetItem("not run" if value is None else str(value)),
+                    QTableWidgetItem("undefined" if value is None else f"{value:.6g}" if isinstance(value, float) else str(value)),
                 )
 
     def _configure_metrics_table(self):
@@ -1699,10 +1898,23 @@ class MainWindow(QMainWindow):
             "episode_split": self.episode_split,
             "metrics": self.last_metrics or {"evaluation_scope": "not run"},
         }
-        target = generate_report([run], path)
+        runs = []
+        for result in self.last_evaluations:
+            for condition in ("clean", "test"):
+                runs.append({"name": f"{result['label']} / {condition}",
+                             "model": result["label"], "metrics": result[condition],
+                             "corruption": "clean" if condition == "clean" else result["test_config"],
+                             "seed": result["test_config"]["seed"],
+                             "paired_evaluation": result})
+        target = generate_report(runs or [run], path)
         self.statusBar().showMessage(f"Report exported to {target}")
 
     def closeEvent(self, event):
+        if self._evaluation_busy():
+            self.cancel_evaluation()
+            event.ignore()
+            self.eval_status.setText("Cancelling evaluation; close the window again when it finishes.")
+            return
         if self.worker:
             self.worker.stop_event.set()
         if self.thread and self.thread.isRunning():

@@ -1,0 +1,806 @@
+\documentclass[11pt,a4paper,fontset=fandol]{ctexart}
+\usepackage[a4paper,top=20mm,bottom=19mm,left=19mm,right=19mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{Latin Modern Mono}
+\usepackage{booktabs,tabularx,array,amsmath,amssymb}
+\usepackage{xcolor,tcolorbox,graphicx,float,fancyhdr,hyperref,enumitem,microtype}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots}
+\pgfplotsset{compat=1.18}
+\definecolor{navy}{HTML}{17324D}
+\definecolor{blue}{HTML}{3157D5}
+\definecolor{orange}{HTML}{D56B2D}
+\definecolor{ink}{HTML}{263442}
+\definecolor{muted}{HTML}{66788A}
+\definecolor{panel}{HTML}{F3F6FA}
+\definecolor{rule}{HTML}{D8E0E8}
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=blue}
+\setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{2em}
+\setlength{\parskip}{0.5em}
+\setlength{\headheight}{17pt}
+\setlist{nosep,leftmargin=1.5em}
+\renewcommand{\arraystretch}{1.18}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\textcolor{muted}{Sync2Act / Data Quality Study}}
+\rhead{\small\textcolor{muted}{v1\_4\_0}}
+\cfoot{\textcolor{muted}{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\note}[1]{\begin{tcolorbox}[colback=panel,colframe=rule,boxrule=0.5pt,arc=1mm]#1\end{tcolorbox}}
+\newcommand{\metric}[1]{\textcolor{blue}{\bfseries #1}}
+
+\usepackage{multirow,tocloft}
+\setlength{\cftsecnumwidth}{2.8em}
+\setlength{\cftbeforesecskip}{5pt}
+\definecolor{teal}{HTML}{00A6A6}
+\definecolor{purple}{HTML}{7456B8}
+\definecolor{rose}{HTML}{D45576}
+\definecolor{green}{HTML}{3B9A66}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcommand{\good}[1]{\textcolor{green}{\bfseries #1}}
+\newcommand{\warn}[1]{\textcolor{orange}{\bfseries #1}}
+\hypersetup{pdftitle={Sync2Act v1\_4\_0: Data Quality and Policy Robustness}}
+\setcounter{tocdepth}{1}
+\begin{document}
+\thispagestyle{empty}
+\vspace*{12mm}
+{\color{blue}\rule{25mm}{2.5pt}}\\[7mm]
+{\fontsize{30}{36}\selectfont\bfseries\color{navy}Sync2Act\par}
+\vspace{5mm}
+{\LARGE\bfseries\color{navy}数据质量与策略鲁棒性\par}
+\vspace{4mm}{\large\color{muted}从受损示范学习，到受损观测下的动作预测\par}
+\vspace{5mm}{\large v1\_4\_0 / 2026-10-07}\par\vspace{6mm}
+\note{研究问题：已知数据质量信息，应如何进入模仿学习系统？本研究在同一组机器人任务和固定模型上，连接训练数据损坏、测试观测损坏和动作块时间集成三类实验，区分学习阶段与预测阶段的收益。}
+\begin{center}
+\small
+\begin{tabular}{lp{121mm}}
+\toprule
+实验维度 & 规模 \\
+\midrule
+训练与消融 & 3 数据集 × 6 模型 × 5 条件 × 3 seeds = 270 \\
+测试鲁棒性 & 4,158 次评估，包含 270 个干净基线核对 \\
+时间集成 & 270 组配对；固定 decay=0.7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{主要发现。}正确动作标签质量加权能显著缓解训练示范损坏：动作标签损坏时，Q-Full 与 ACT-Lite 的平均训练退化比分别为 0.977 和 2.432；综合损坏时为 1.144 和 1.535。但在同样采用综合损坏训练后，Q-Full 在 ALOHA 中等状态损坏测试中的配对 MSE 比 ACT-Lite 高约 36.1\%，Koch 和 xArm 则分别低约 3.0\% 和 2.1\%。训练阶段的收益不会自动转化为受损输入下的优势。
+
+固定 decay=0.7 的时间集成未降低总体实际 MSE：270 组逐运行变化百分比的均值为 $+21.20\%$。本文同时报告绝对误差与四类配对比值，避免将分母变化误解为性能改善。
+
+\vfill\note{本文整合既有训练与评估结果，未重新训练。所有结果是离线动作预测，不代表真实机器人闭环成功率。}
+\clearpage\begingroup\setlength{\parskip}{0pt}\tableofcontents\endgroup
+\vspace{8mm}\note{阅读顺序：第 1--4 节统一定义实验与指标；第 5 节研究训练示范质量；第 6--7 节检验测试输入及质量信息；第 8 节评估预测方式；第 9--10 节给出联合结论、局限和复现信息。附录列出完整受损测试矩阵。}
+\clearpage\section{研究问题与统一实验设计}
+数据损坏可能发生在学习阶段，也可能发生在模型使用阶段。前者影响监督信号与学到的策略，后者直接改变预测时可用的观测。研究分别检验：质量输入和标签加权是否改善受损示范学习；固定模型面对图像/状态故障时是否稳健；时间集成是否降低同一轨迹上的预测误差。
+
+\begin{center}
+\small
+\begin{tabular}{llp{94mm}}
+\toprule
+训练 & 测试 & 本报告中的位置 \\
+\midrule
+干净 & 干净 & 历史基线的重新核对 \\
+受损 & 干净 & 历史基线的重新核对 \\
+干净 & 受损 & 新增测试鲁棒性结果 \\
+受损 & 受损 & 新增跨条件结果 \\
+\bottomrule
+\end{tabular}
+\end{center}\begin{center}
+\footnotesize
+\begin{tabular}{lrrrrrr}
+\toprule
+数据集 & Ep. & Frames & Cam. & S / A & Train / Val / Test & 测试帧 \\
+\midrule
+ALOHA & 49 & 29,400 & 4 & 14 / 14 & 41 / 4 / 4 & 2,400 \\
+Koch & 100 & 32,951 & 2 & 6 / 6 & 80 / 10 / 10 & 3,342 \\
+xArm & 800 & 20,000 & 1 & 4 / 4 & 640 / 80 / 80 & 2,000 \\
+\bottomrule
+\end{tabular}
+\end{center}ALOHA 为静态电池操作，Koch 为单块 Lego 拾放，xArm 为抬升任务；三个数据集均通过单任务检查。使用完整 episodes、完整 frames 和全部同步相机，先按 episode 固定划分，再分别构造训练损坏与测试观测副本，避免相邻帧跨分区泄漏。“干净”表示未追加合成故障，并不保证原始记录完全没有噪声。
+
+固定划分种子为 7，训练种子为 7、17、27，图像最长边 64 像素，10 epochs、CUDA、batch size 256、动作 horizon 8。每个数据集仅从干净训练 episodes 计算一次归一化，并在其 90 组模型/条件/种子组合中固定；测试从 checkpoint 恢复这些统计量。验证集保持干净，测试故障不改变划分或训练统计量。
+
+\clearpage\section{模型消融与受损训练条件}
+ACT-Lite 是轻量动作块预测模型，省略原始 ACT 的 CVAE 路径。Q-Full 等质量模型复用其骨干，按相机和状态分别处理观测质量。BC-MLP 虽由软件支持，但没有进入这 270 个历史 checkpoint 的实验矩阵。
+
+\begin{center}
+\small
+\begin{tabular}{lp{68mm}l}
+\toprule
+模型 & 训练时质量输入 & 标签加权 \\
+\midrule
+ACT-Lite & 无 & 否 \\
+Q-Input & 真实合成元数据 & 否 \\
+Q-Weighted & 无 & 是 \\
+Q-Full & 真实合成元数据 & 是 \\
+Q-Shuffled & 打乱的质量元数据 & 是，使用打乱值 \\
+Q-Constant & 恒定为正常 & 是，使用常数值 \\
+\bottomrule
+\end{tabular}
+\end{center}
+训练片段的故障构成如下，测试观测使用下一节的独立配方。C/I/S/A/M 是后续表格使用的训练条件缩写。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{lp{133mm}}
+\toprule
+条件 & 训练片段构成 \\
+\midrule
+C & 100\% 干净 \\
+I & 50\% 干净；40\% 图像延迟 2 帧；10\% 图像缺失 \\
+S & 50\% 干净；40\% 状态延迟 2 帧；10\% 状态缺失 \\
+A & 50\% 干净；40\% 动作延迟 2 帧；10\% 动作标签缺失 \\
+M & 20\% 干净；图像/状态延迟各 20\%；动作延迟 25\%；图像/状态/动作缺失各 5\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{本轮 Oracle 测试向六种训练变体提供相同的真实观测质量元数据，包括训练时使用 shuffled/constant 的模型。训练消融与推理时的元数据干预是两种不同的对照。动作标签质量不参与测试指标加权。}
+表中的 Q- 是 Quality- 的缩写，Q-Weighted 对应 Quality-Weighted-Loss。Q-Shuffled 打破逐样本质量对应关系，Q-Constant 将质量标为正常。缺失图像/状态不删除整个训练样本；缺失动作涉及标签可靠性，只有启用标签质量加权的损失会降低或移除其监督贡献。
+
+\clearpage\section{故障注入与评估流程}
+\textbf{训练故障。}每条 episode 按连续 16 帧分段，按权重互斥分配一个故障类别，片段不重复计入多个比例。训练移位为 2 帧，越界标记缺失；对应输入/标签与质量置零，并记录 mask 和 provenance。实际片段比例与目标最大偏差约 0.03 个百分点；按帧计，单模态条件最大约 0.35 个百分点，综合条件约 0.83，源于 episode 尾部不足 16 帧的片段。
+
+每条测试轨迹划分为连续的 16 帧片段，按确定性随机种子互斥分配故障类型。延迟读取同一 episode 的过去观测，缺失输入置零。边界不足以读取过去帧时，使用缺失标记；不删帧、不跨 episode，也不读取未来帧。
+
+\[\widetilde{o}_t=o_{t-\Delta},\quad \Delta>0;\qquad \widetilde{a}^{\,\mathrm{target}}_t=a_t.\]
+\begin{center}
+\footnotesize
+\begin{tabular}{lrrr}
+\toprule
+强度 & 延迟帧数 & 单模态：延迟 / 缺失 & 混合：延迟 / 缺失 \\
+\midrule
+轻 & 1 & 0.20 / 0.05 & 0.30 / 0.10 \\
+中 & 2 & 0.40 / 0.10 & 0.60 / 0.20 \\
+重 & 4 & 0.60 / 0.20 & 0.70 / 0.30 \\
+\bottomrule
+\end{tabular}
+\end{center}
+单模态条件分别损坏图像或状态。混合条件把延迟份额、缺失份额各自平分给图像与状态；例如中等混合测试为 20\% 干净、30\% 图像延迟、30\% 状态延迟、10\% 图像缺失、10\% 状态缺失。余下份额为干净片段。
+
+这些比例按片段分配，并非逐帧独立丢失概率。episode 尾部短片段会使实际受损帧比例与目标略有不同；逐评估清单保存实际比例和毫秒偏移。三个测试损坏种子为 107、117、127，与训练种子独立。相同数据集、条件和种子下，所有模型使用同一组受损输入。
+
+\begin{center}
+\small
+\begin{tabular}{lcr}
+\toprule
+实验组 & 构成 & 数量 \\
+\midrule
+干净基线 & $270$ & 270 \\
+中等 Oracle & $270\times3\times3$ & 2,430 \\
+未知元数据 & $90\times3\times3$ & 810 \\
+轻 / 重强度 & $36\times2\times3\times3$ & 648 \\
+总计 &  & \textbf{4,158} \\
+\bottomrule
+\end{tabular}
+\end{center}
+未知元数据组覆盖 Q-Input、Q-Full 的全部训练条件。强度扩展覆盖 ACT-Lite、Q-Full 的 C 和 M 训练条件。轻/中/重同时改变延迟和受损比例，因此不应解释为单变量敏感性实验。
+\clearpage\section{指标、配对关系与不确定性}
+默认评估取动作块首步，反归一化到原动作单位；MSE 对全部测试帧和动作维度等权平均，MAE 同样计算。测试指标不按质量降权，动作标签始终固定。不同机器人的动作尺度不同，不跨数据集合并原始 MSE。
+
+\[E=\frac{1}{ND}\sum_{t=1}^{N}\sum_{j=1}^{D}(\hat a_{t,j}-a_{t,j})^2.\]
+\begin{align*}
+R_{\mathrm{train}}&=\frac{E_{\mathrm{damaged\ train,clean\ test}}}{E_{\mathrm{clean\ train,clean\ test}}},\\
+R_{\mathrm{test}}&=\frac{E_{\mathrm{same\ checkpoint,damaged\ test}}}{E_{\mathrm{same\ checkpoint,clean\ test}}},\\
+P&=\frac{E_{\mathrm{Q\text{-}Full}}}{E_{\mathrm{ACT\text{-}Lite}}},\qquad
+U=\frac{E_{\mathrm{unknown\ metadata}}}{E_{\mathrm{Oracle\ metadata}}}.
+\end{align*}
+$R_{\mathrm{train}}$ 固定数据集、模型与训练种子，衡量损坏训练的影响；$R_{\mathrm{test}}$ 固定 checkpoint，衡量损坏测试的影响。$P$ 固定训练/测试条件及种子，小于 1 才表示 Q-Full 绝对误差更低；$U$ 仅改变推理质量元数据，大于 1 表示隐去质量信息使误差更高。各比值先逐配对计算再平均，分母为零时未定义。
+
+训练损坏总体曲线平均 3 数据集 × 3 训练 seeds 的 9 个比值。受损测试则在每个训练种子内先平均 3 个独立损坏 seeds（107、117、127），再平均 3 个训练 seeds；报告训练种子间样本标准差，并在 CSV 中保留训练种子内损坏标准差的均值。3×3 配对不是 9 次独立训练，不给出显著性或置信区间结论。
+
+\[\bar R_s=\tfrac13\sum_r R_{s,r},\quad \bar R=\tfrac13\sum_s\bar R_s,\quad s_{\mathrm{train}}=\sqrt{\frac{\sum_s(\bar R_s-\bar R)^2}{2}}.\]
+\note{退化倍率更低不一定意味着绝对误差更低，尤其不能跨训练条件或跨评估方式忽略分母变化。训练结果章节的 R 指训练退化比，受损测试章节的 R 指同 checkpoint 测试退化比。}
+\clearpage\section{从受损示范中学习：干净测试结果}
+首先保持测试观测干净，隔离训练示范质量的影响。六组模型采用相同划分、预处理和训练预算，因此可通过质量输入与标签加权的消融判断收益来源。下图与表使用训练退化比；其中最低值只表示观察到的均值最小。
+
+
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+width=0.99\linewidth,height=77mm,
+ymin=0.85,ymax=2.65,
+ylabel={平均 MSE 比值 $R$},
+symbolic x coords={Image,State,Action,Mixed},
+xtick=data,
+legend style={at={(0.5,-0.24)},anchor=north,legend columns=3,font=\scriptsize,draw=none},
+grid=major,grid style={rule!60},axis line style={rule},tick style={rule},
+every axis plot/.append style={thick,mark size=2pt}]
+\addplot[color=navy,mark=*] coordinates {(Image,0.999)(State,1.388)(Action,2.432)(Mixed,1.535)};
+\addlegendentry{ACT-Lite}
+\addplot[color=blue,mark=square*] coordinates {(Image,0.995)(State,1.234)(Action,2.394)(Mixed,2.007)};
+\addlegendentry{Quality-Input}
+\addplot[color=orange,mark=triangle*] coordinates {(Image,1.000)(State,1.374)(Action,0.992)(Mixed,1.163)};
+\addlegendentry{Weighted-Loss}
+\addplot[color=teal,mark=diamond*] coordinates {(Image,0.996)(State,1.238)(Action,0.977)(Mixed,1.144)};
+\addlegendentry{Quality-Full}
+\addplot[color=rose,mark=pentagon*] coordinates {(Image,1.004)(State,1.449)(Action,2.463)(Mixed,1.538)};
+\addlegendentry{Shuffled}
+\addplot[color=purple,mark=x] coordinates {(Image,0.994)(State,1.303)(Action,2.401)(Mixed,1.500)};
+\addlegendentry{Constant}
+\addplot[color=muted,dashed,no marks] coordinates {(Image,1)(Mixed,1)};
+\end{axis}
+\end{tikzpicture}
+\caption{三个数据集与三个 seeds 的平均相对 MSE。越低越好；虚线为干净训练基准。}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+模型 & Image damaged & State damaged & Action damaged & Mixed\\
+\midrule
+ACT-Lite & 0.999 & 1.388 & 2.432 & 1.535\\
+Quality-Input & 0.995 & \good{1.234} & 2.394 & 2.007\\
+Weighted-Loss & 1.000 & 1.374 & 0.992 & 1.163\\
+Quality-Full & 0.996 & 1.238 & \good{0.977} & \good{1.144}\\
+Shuffled & 1.004 & 1.449 & 2.463 & 1.538\\
+Constant & \good{0.994} & 1.303 & 2.401 & 1.500\\
+\bottomrule
+\end{tabular}
+\caption{平均 MSE 比值。绿色仅标示列内最小值，不代表统计显著性。}
+\end{table}
+
+% temporal-ensemble:start
+\clearpage\subsection{故障模态揭示的收益来源}
+\subsubsection{Action 标签损坏：加权 loss 是关键}
+
+ACT-Lite 在 action-damaged 条件下平均退化到 $2.432\times$，Quality-Input 仍为 $2.394\times$。Quality-Input 只接收观测质量，并不知道动作标签质量；只要错误标签继续以普通权重进入 loss，监督信号仍会把模型拉向错误目标。
+
+Quality-Weighted-Loss 将比值降至 $0.992\times$，Quality-Full 为 $0.977\times$。Shuffled 与 Constant 分别退化到 $2.463\times$ 和 $2.401\times$，这些对照支持\textbf{正确对齐的逐样本 action-label quality}的重要性，不能仅将收益归因于额外输入维度、随机降权或模型容量。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Y rrr}
+\toprule
+模型 & XArm MSE & Koch MSE & ALOHA MSE\\
+\midrule
+ACT-Lite & 0.406790 & 21.5804 & 0.0009031\\
+Quality-Input & 0.405661 & 21.4460 & 0.0009163\\
+Weighted-Loss & 0.388007 & 7.3369 & 0.0002718\\
+Quality-Full & \good{0.387742} & \good{7.3168} & \good{0.0002662}\\
+Shuffled & 0.407930 & 21.8305 & 0.0009603\\
+Constant & 0.406804 & 21.5116 & 0.0009184\\
+\bottomrule
+\end{tabularx}
+\caption{Mixed action damaged 的三-seed 平均绝对 MSE。不同数据集之间不可横向比较数值大小。}
+\end{table}
+
+\subsubsection{State 观测损坏：quality 输入有帮助但不完全}
+
+State damaged 使 ACT-Lite 平均退化到 $1.388\times$。Quality-Input 和 Quality-Full 分别为 $1.234\times$ 与 $1.238\times$，优于不使用 observation quality 的 Weighted-Loss（$1.374\times$）。然而两者仍明显高于 1，说明 quality 元数据只能帮助模型识别不可靠 state，并不能恢复被错位或置零的信息。
+
+\subsubsection{Image 观测损坏：当前离线指标不敏感}
+
+所有模型在 image-damaged 条件下都约为 $1.0\times$。正确 image quality、打乱 quality 和恒定 quality 之间没有稳定差距。这个结果只能说明在当前 64 像素输入、所选任务与离线 action MSE 下，40\% 两帧图像错位加 10\% 全相机缺失没有形成可辨别的平均退化；不能据此断言真实闭环控制对视觉故障不敏感。
+
+\subsubsection{综合损坏：主要收益来自处理坏 action 标签}
+
+综合条件下，ACT-Lite 为 $1.535\times$，Quality-Input 反而达到 $2.007\times$；Weighted-Loss 与 Quality-Full 分别降至 $1.163\times$ 和 $1.144\times$。Full 仅比 Weighted-Loss 略好，说明主要收益仍来自 action-label weighting，observation quality 的额外贡献较小且随 seed 波动。
+\clearpage\subsection{任务差异与模型配对}
+总体均值不能替代逐任务比较。下面同时保留各模型自身基线归一化后的结果，以及同条件绝对误差的胜出次数；两者回答的问题不同。
+
+\begin{table}[H]
+\centering
+\scriptsize
+\begin{tabular}{p{32mm}p{31mm}rrrr}
+\toprule
+数据集 & 模型 & Image & State & Action & Mixed\\
+\midrule
+XArm Lift & ACT-Lite & 1.000 & 1.024 & 1.073 & 1.059\\
+ & Quality-Full & 1.000 & 1.013 & 1.024 & 1.029\\
+Koch Pick Place & ACT-Lite & 1.000 & 1.467 & 2.958 & 1.774\\
+ & Quality-Full & 1.017 & 1.270 & 0.964 & 1.123\\
+ALOHA Battery & ACT-Lite & 0.997 & 1.674 & 3.265 & 1.773\\
+ & Quality-Full & 0.973 & 1.430 & 0.942 & 1.279\\
+\bottomrule
+\end{tabular}
+\caption{按数据集汇总的三-seed 平均 MSE 比值。}
+\end{table}
+
+XArm 对本轮损坏整体较不敏感；Koch 与 ALOHA 的 state/action 损坏更明显。因此不能只用一个数据集判断质量机制。Quality-Full 相对 ACT-Lite 在 36 个损坏配对中有 31 个获得更低绝对 MSE，按各自 clean 基线归一化后也是 31/36。相对 Shuffled 为 32/36 个更低绝对 MSE，相对 Constant 为 29/36。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Y C{29mm} C{29mm} C{24mm}}
+\toprule
+比较 & Full 更低绝对 MSE & Full 更低相对比值 & 总配对数\\
+\midrule
+Quality-Full vs ACT-Lite & 31 & 31 & 36\\
+Quality-Full vs Shuffled & 32 & 31 & 36\\
+Quality-Full vs Constant & 29 & 29 & 36\\
+Quality-Full vs Quality-Input & 29 & 28 & 36\\
+Quality-Full vs Weighted-Loss & 23 & 24 & 36\\
+\bottomrule
+\end{tabularx}
+\end{table}
+\clearpage\section{固定模型面对受损测试观测}
+训练损坏实验说明模型能否从不可靠示范中学习，但不能回答部署输入受损时是否可靠。下面保持同一 checkpoint、动作标签与归一化，只改变留出轨迹的观测；先检查干净训练模型，再检查见过综合损坏的模型。
+
+\subsection{干净训练模型的敏感性}
+首先比较 C 训练条件、中等损坏、Oracle 元数据。每一行对应 3 个训练种子与 3 个损坏种子的配对评估。MSE 是原动作单位下的平均误差，R 的分母是同一 checkpoint 的干净测试误差。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{lllrr}
+\toprule
+数据集 & 模型 & 测试 & 平均 MSE & $\bar R\pm s_{\mathrm{train}}$ \\
+\midrule
+ALOHA & ACT-Lite & 图像 & 3.345e-04 & $1.158\pm0.005$ \\
+ALOHA & ACT-Lite & 状态 & 7.563e-03 & $26.397\pm1.934$ \\
+ALOHA & ACT-Lite & 混合 & 7.551e-03 & $26.355\pm1.929$ \\
+ALOHA & Q-Full & 图像 & 3.349e-04 & $1.178\pm0.124$ \\
+ALOHA & Q-Full & 状态 & 0.0152 & $53.832\pm6.362$ \\
+ALOHA & Q-Full & 混合 & 0.0131 & $46.527\pm5.331$ \\
+Koch & ACT-Lite & 图像 & 7.7389 & $1.054\pm0.039$ \\
+Koch & ACT-Lite & 状态 & 205.7562 & $28.149\pm2.135$ \\
+Koch & ACT-Lite & 混合 & 204.0508 & $27.914\pm2.071$ \\
+Koch & Q-Full & 图像 & 8.1117 & $1.069\pm0.073$ \\
+Koch & Q-Full & 状态 & 351.1573 & $46.384\pm4.630$ \\
+Koch & Q-Full & 混合 & 302.6846 & $39.968\pm3.418$ \\
+xArm & ACT-Lite & 图像 & 0.3791 & $1.000\pm0.000$ \\
+xArm & ACT-Lite & 状态 & 0.4583 & $1.209\pm0.028$ \\
+xArm & ACT-Lite & 混合 & 0.4513 & $1.191\pm0.027$ \\
+xArm & Q-Full & 图像 & 0.3786 & $1.000\pm0.000$ \\
+xArm & Q-Full & 状态 & 0.4178 & $1.103\pm0.050$ \\
+xArm & Q-Full & 混合 & 0.4124 & $1.089\pm0.041$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+图像受损对三个数据集的影响显著小于状态受损，但并非完全无影响。例如 ALOHA 的 ACT-Lite 图像条件平均 R 为 1.158；状态条件达到 26.397。xArm 的相应比值为 1.000 和 1.209，说明不同任务对同一故障配方的敏感性差异很大。
+
+\note{干净训练的 Q-Full 在 ALOHA 与 Koch 的状态/混合损坏下没有显示优势；xArm 的趋势不同。不能用单一数据集或单个 seed 推断质量机制普遍有效。}
+\clearpage\subsection{综合损坏训练后的测试鲁棒性}
+进一步固定为 M 训练条件、中等测试损坏和 Oracle 元数据。与干净训练模型的绝对 MSE 对照，可观察历史损坏训练模型在同一测试故障下的表现；各组 R 的分母仍是各自 checkpoint 的干净测试误差。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{lllrr}
+\toprule
+数据集 & 模型 & 测试 & 平均 MSE & $\bar R\pm s_{\mathrm{train}}$ \\
+\midrule
+ALOHA & ACT-Lite & 图像 & 4.986e-04 & $1.002\pm0.009$ \\
+ALOHA & ACT-Lite & 状态 & 3.945e-03 & $7.937\pm0.385$ \\
+ALOHA & ACT-Lite & 混合 & 3.907e-03 & $7.860\pm0.399$ \\
+ALOHA & Q-Full & 图像 & 3.592e-04 & $0.994\pm0.019$ \\
+ALOHA & Q-Full & 状态 & 5.325e-03 & $15.162\pm5.258$ \\
+ALOHA & Q-Full & 混合 & 5.279e-03 & $15.031\pm5.219$ \\
+Koch & ACT-Lite & 图像 & 12.8291 & $0.987\pm0.003$ \\
+Koch & ACT-Lite & 状态 & 149.8475 & $11.548\pm0.498$ \\
+Koch & ACT-Lite & 混合 & 147.8348 & $11.393\pm0.478$ \\
+Koch & Q-Full & 图像 & 8.5624 & $1.004\pm0.008$ \\
+Koch & Q-Full & 状态 & 145.2861 & $17.080\pm1.012$ \\
+Koch & Q-Full & 混合 & 143.9248 & $16.921\pm1.021$ \\
+xArm & ACT-Lite & 图像 & 0.4012 & $1.000\pm0.001$ \\
+xArm & ACT-Lite & 状态 & 0.4122 & $1.027\pm0.003$ \\
+xArm & ACT-Lite & 混合 & 0.4110 & $1.024\pm0.003$ \\
+xArm & Q-Full & 图像 & 0.3882 & $0.997\pm0.002$ \\
+xArm & Q-Full & 状态 & 0.4037 & $1.037\pm0.003$ \\
+xArm & Q-Full & 混合 & 0.4011 & $1.030\pm0.002$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{center}
+\footnotesize
+\begin{tabular}{lrrr}
+\toprule
+$P=$ Q-Full / ACT-Lite & 图像 & 状态 & 混合 \\
+\midrule
+ALOHA & 0.723 & 1.361 & 1.362 \\
+Koch & 0.669 & 0.970 & 0.974 \\
+xArm & 0.968 & 0.979 & 0.976 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Q-Full 在 ALOHA 的状态和混合测试中分别比 ACT-Lite 高约 36.1\% 和 36.2\% 的配对 MSE；Koch 与 xArm 的比值略低于 1。这里报告的是观察到的均值，不意味着小幅差异具有统计显著性。
+\clearpage\subsection{故障强度与任务敏感性}
+仅展示 ACT-Lite 与 Q-Full、C 与 M 训练条件、Oracle 元数据。纵轴为同一 checkpoint 的 MSE 退化比 R，使用对数刻度。每个点先平均损坏种子，再平均训练种子。接近基线的面板至少覆盖 0.9--1.1；各面板纵轴范围不同。
+
+\begin{center}\begin{tikzpicture}\begin{groupplot}[group style={group size=3 by 1,horizontal sep=9mm},width=53mm,height=47mm,scale only axis=false,ymode=log,log ticks with fixed point,grid=major,grid style={gray!15},tick label style={font=\scriptsize},title style={font=\small},xlabel style={font=\scriptsize},xtick={1,2,3},xticklabels={轻,中,重},xmin=0.8,xmax=3.2,/tikz/mark size=1.7pt]
+\nextgroupplot[title={ALOHA / 图像},ymin=0.89423285,ymax=1.6340389,ytick={0.9,1,1.1,1.25,1.5},yticklabels={0.9,1,1.1,1.25,1.5},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,1.086046638) (2,1.15836982) (3,1.320801036)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,1.002900065) (2,1.0019216) (3,1.005768369)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,1.059995526) (2,1.177723325) (3,1.485489955)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,0.9943666232) (2,0.9935920501) (3,1.012454378)};
+\nextgroupplot[title={ALOHA / 状态},ymin=0.9,ymax=160.34638,ytick={1,3,10,30,100},yticklabels={1,3,10,30,100},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,12.89139038) (2,26.39696832) (3,52.85212483)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,4.377939978) (2,7.936574772) (3,14.58928628)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,16.20969143) (2,53.83181953) (3,145.7694402)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,7.716280519) (2,15.16189884) (3,47.19030768)};
+\nextgroupplot[title={ALOHA / 混合},ymin=0.9,ymax=102.20684,ytick={1,3,10,30,100},yticklabels={1,3,10,30,100},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,12.06862065) (2,26.35530562) (3,40.79744248)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,3.998404218) (2,7.859653727) (3,11.41993606)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,14.59647639) (2,46.52727977) (3,92.91531269)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,7.227735942) (2,15.03085546) (3,32.60145493)};
+\end{groupplot}\end{tikzpicture}\end{center}
+\begin{center}\begin{tikzpicture}\begin{groupplot}[group style={group size=3 by 1,horizontal sep=9mm},width=53mm,height=47mm,scale only axis=false,ymode=log,log ticks with fixed point,grid=major,grid style={gray!15},tick label style={font=\scriptsize},title style={font=\small},xlabel style={font=\scriptsize},xtick={1,2,3},xticklabels={轻,中,重},xmin=0.8,xmax=3.2,/tikz/mark size=1.7pt]
+\nextgroupplot[title={Koch / 图像},ymin=0.87433213,ymax=1.2847227,ytick={0.9,1,1.1,1.25},yticklabels={0.9,1,1.1,1.25},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,1.029817217) (2,1.054373759) (3,1.111954771)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,0.9941409614) (2,0.9874619109) (3,0.9714801454)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,1.025454467) (2,1.069496055) (3,1.167929717)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,1.002106642) (2,1.004143417) (3,1.01271914)};
+\nextgroupplot[title={Koch / 状态},ymin=0.9,ymax=138.21683,ytick={1,3,10,30,100},yticklabels={1,3,10,30,100},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,14.59964988) (2,28.1488623) (3,60.49627603)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,6.146509429) (2,11.5484611) (3,24.5056252)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,15.19430962) (2,46.38400366) (3,125.6516592)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,8.912434004) (2,17.08048997) (3,44.70173611)};
+\nextgroupplot[title={Koch / 混合},ymin=0.9,ymax=88.915466,ytick={1,3,10,30},yticklabels={1,3,10,30},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,14.56320256) (2,27.91380437) (3,43.91474648)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,6.104746535) (2,11.39293285) (3,17.86129192)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,14.11746725) (2,39.96814328) (3,80.832242)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,8.874611265) (2,16.92121516) (3,31.59688663)};
+\end{groupplot}\end{tikzpicture}\end{center}
+\begin{center}\begin{tikzpicture}\begin{groupplot}[group style={group size=3 by 1,horizontal sep=9mm},width=53mm,height=47mm,scale only axis=false,ymode=log,log ticks with fixed point,grid=major,grid style={gray!15},tick label style={font=\scriptsize},title style={font=\small},xlabel style={font=\scriptsize},xtick={1,2,3},xticklabels={轻,中,重},xmin=0.8,xmax=3.2,/tikz/mark size=1.7pt]
+\nextgroupplot[title={xArm / 图像},ymin=0.89477632,ymax=1.1005521,ytick={0.9,1,1.1},yticklabels={0.9,1,1.1},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,1.000081803) (2,1.0001954) (3,1.000501951)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,1.000010466) (2,0.999517416) (3,0.9986843975)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,0.9999934105) (2,0.9998701524) (3,0.9999648027)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,0.9983869459) (2,0.9967152449) (3,0.9941959118)};
+\nextgroupplot[title={xArm / 状态},ymin=0.9,ymax=1.6243887,ytick={0.9,1,1.1,1.25,1.5},yticklabels={0.9,1,1.1,1.25,1.5},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,1.093279567) (2,1.209062374) (3,1.476716955)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,1.012031148) (2,1.027094592) (3,1.064677081)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,1.047322347) (2,1.103236698) (3,1.205605167)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,1.020269359) (2,1.036678173) (3,1.090203033)};
+\nextgroupplot[title={xArm / 混合},ymin=0.9,ymax=1.443662,ytick={0.9,1,1.1,1.25},yticklabels={0.9,1,1.1,1.25},minor y tick num=0]
+\addplot[gray,thin,forget plot] coordinates {(1,1)(3,1)};
+\addplot[blue,dashed,thick,mark=*] coordinates {(1,1.082179143) (2,1.190731786) (3,1.312420026)};
+\addplot[blue,solid,thick,mark=*] coordinates {(1,1.009656747) (2,1.023926148) (3,1.042380438)};
+\addplot[orange,dashed,thick,mark=*] coordinates {(1,1.037784772) (2,1.08896235) (3,1.132657836)};
+\addplot[orange,solid,thick,mark=*] coordinates {(1,1.01518571) (2,1.029830756) (3,1.055367362)};
+\end{groupplot}\end{tikzpicture}\end{center}
+\textcolor{blue}{蓝色：ACT-Lite}；\textcolor{orange}{橙色：Q-Full}。虚线：C 训练；实线：M 训练。图中展示均值，未绘制置信区间。
+
+状态/混合故障随强度上升通常呈更大退化，ALOHA 与 Koch 最为明显。R 的大小不能代替跨模型绝对误差比较；对模型优劣应同时查看第 6 节的配对 P。
+\clearpage\section{质量信息的作用与跨条件比较}
+\subsection{同一受损输入：Oracle 与 Unknown}
+Oracle 使用合成故障产生的质量分数、缺失标记和时间偏移；Unknown 将观测质量设为 1、缺失标记和时间偏移设为 0。两者使用完全相同的受损图像/状态与同一 checkpoint。Unknown 不会修复观测。下表展示 C 与 M 训练条件，其他训练条件见机器可读结果。
+
+\begin{center}
+\small
+\begin{tabular}{lllrrr}
+\toprule
+数据集 & 模型 & 训练 & 图像 & 状态 & 混合 \\
+\midrule
+ALOHA & Q-Input & C & 0.877 & 0.506 & 0.582 \\
+ALOHA & Q-Input & M & 1.203 & 1.577 & 1.607 \\
+ALOHA & Q-Full & C & 0.879 & 0.507 & 0.583 \\
+ALOHA & Q-Full & M & 1.144 & 1.507 & 1.522 \\
+Koch & Q-Input & C & 0.943 & 0.579 & 0.665 \\
+Koch & Q-Input & M & 1.254 & 1.447 & 1.467 \\
+Koch & Q-Full & C & 0.942 & 0.580 & 0.665 \\
+Koch & Q-Full & M & 0.996 & 1.389 & 1.386 \\
+xArm & Q-Input & C & 1.000 & 1.113 & 1.110 \\
+xArm & Q-Input & M & 1.014 & 1.050 & 1.055 \\
+xArm & Q-Full & C & 1.000 & 1.119 & 1.115 \\
+xArm & Q-Full & M & 1.004 & 1.099 & 1.096 \\
+\bottomrule
+\end{tabular}
+\end{center}
+表内为 $U=\mathrm{MSE}_{\mathrm{unknown}}/\mathrm{MSE}_{\mathrm{Oracle}}$ 的配对均值。对于 M 训练的 Q-Full，状态损坏下的 U 在 ALOHA、Koch 和 xArm 分别约为 1.507、1.389、1.099，说明隐去正确质量信息会提高这些条件下的平均误差。
+
+但 C 训练的 Q-Full 在 ALOHA/Koch 状态损坏下的 U 约为 0.507/0.580，即 Unknown 反而更好。一个可能解释是，干净训练没有让模型学会正确处理低质量输入及其元数据；这只是待验证假设，不能由本实验单独证明。
+
+\note{Oracle 在这里表示已知合成故障来源，并不表示质量分数经过概率校准，也不是模型性能的理论上界。部署时如何自动检测质量，未在本轮实验中解决。}
+\clearpage\subsection{为何干净测试的优势未必延续}
+为直接连接上述两组结果，下面固定综合损坏训练（M）、首步预测和 Oracle 测试质量信息，比较同一批模型在干净与中等受损观测上的表现。表中为逐种子配对的 Q-Full / ACT-Lite MSE 百分比变化，负数代表 Q-Full 更好。
+
+\begin{center}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+数据集 & 干净 & 图像损坏 & 状态损坏 & 混合损坏 \\
+\midrule
+ALOHA & $-26.9\%$ & $-27.7\%$ & $+36.1\%$ & $+36.2\%$ \\
+Koch & $-34.2\%$ & $-33.1\%$ & $-3.0\%$ & $-2.6\%$ \\
+xArm & $-3.0\%$ & $-3.2\%$ & $-2.1\%$ & $-2.4\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+ALOHA 的优势在状态/混合损坏下反转；Koch 的优势大幅缩小，xArm 仍为小幅差异。正确质量信息能帮助 Q-Full，并不保证它超越 ACT-Lite；这些均值也未经过显著性检验。下表进一步确认，ACT-Lite 自身同样会随状态损坏退化。
+
+\begin{center}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+ACT-Lite MSE & 干净 & 图像损坏 & 状态损坏 & 混合损坏 \\
+\midrule
+ALOHA & 4.979e-04 & 4.986e-04 & 3.945e-03 & 3.907e-03 \\
+Koch & 12.9916 & 12.8291 & 149.8475 & 147.8348 \\
+xArm & 0.4014 & 0.4012 & 0.4122 & 0.4110 \\
+\bottomrule
+\end{tabular}
+\end{center}
+状态损坏后的同 checkpoint 配对退化倍率依次为 7.94、11.55、1.03。损坏训练不是对测试故障的免疫。以上结果支持区分训练时处理坏标签与预测时处理坏观测；对于 ALOHA 反转的具体机制，仍需单独消融验证。
+
+\clearpage\section{预测方式：因果时间集成}
+除了数据质量，动作块如何转化为逐帧预测也可能影响指标。本节在干净测试观测上比较首步预测与时间集成，模型权重完全相同；因此这里测量的是预测方式的影响，不能据此推断集成在受损观测上的表现。
+
+
+两种评估方式使用同一组 270 个 checkpoint、测试 episodes 和归一化统计量；decay=0.7 在评估前固定。只融合起点不晚于当前时刻的预测，并在每条 episode 边界重置历史。第一步预测一致性核对为 270/270 通过。
+两种评估方式采用相同的归一化规则：先在每个数据集、模型、seed 内，用该条件的测试 MSE 除以同一模型同一 seed 的干净训练测试 MSE，再平均 9 个比值。时间集成曲线的分子和分母均使用集成后的 MSE；两种方式的横轴、六模型配色和纵轴范围一致。
+\[R_{\mathrm{ens}}=\frac{\mathrm{MSE}_{\mathrm{damaged\ train,\ ens}}}{\mathrm{MSE}_{\mathrm{clean\ train,\ ens}}}.\]
+\begin{figure}[H]\centering\begin{tikzpicture}\begin{axis}[
+width=0.99\linewidth,height=77mm,ymin=0.85,ymax=2.65,ylabel={平均 MSE 比值 $R_{\mathrm{ens}}$},
+symbolic x coords={Image,State,Action,Mixed},xtick=data,
+legend style={at={(0.5,-0.24)},anchor=north,legend columns=3,font=\scriptsize,draw=none},
+grid=major,grid style={rule!60},axis line style={rule},tick style={rule},every axis plot/.append style={thick,mark size=2pt}]
+\addplot[color=navy,mark=*] coordinates {(Image,1.00116827)(State,1.25143456)(Action,2.11772046)(Mixed,1.40696803)};
+\addlegendentry{ACT-Lite}
+\addplot[color=blue,mark=square*] coordinates {(Image,1.00154140)(State,1.13276081)(Action,2.07105085)(Mixed,1.68312694)};
+\addlegendentry{Quality-Input}
+\addplot[color=orange,mark=triangle*] coordinates {(Image,1.00175641)(State,1.24646481)(Action,1.00888235)(Mixed,1.12149579)};
+\addlegendentry{Weighted-Loss}
+\addplot[color=teal,mark=diamond*] coordinates {(Image,1.00215427)(State,1.13595354)(Action,1.00021420)(Mixed,1.09702286)};
+\addlegendentry{Quality-Full}
+\addplot[color=rose,mark=pentagon*] coordinates {(Image,1.00914090)(State,1.26358199)(Action,2.10738241)(Mixed,1.37870756)};
+\addlegendentry{Shuffled}
+\addplot[color=purple,mark=x] coordinates {(Image,0.99985525)(State,1.19589319)(Action,2.07474105)(Mixed,1.39162016)};
+\addlegendentry{Constant}
+\addplot[color=muted,dashed,no marks] coordinates {(Image,1)(Mixed,1)};
+\end{axis}\end{tikzpicture}\caption{时间集成后的平均相对 MSE。每点平均 3 数据集与 3 seeds 的 9 个比值；虚线为时间集成后的干净训练基准。}\end{figure}
+\begin{table}[H]\centering\small\begin{tabular}{lrrrr}\toprule
+模型 & Image & State & Action & Mixed\\\midrule
+ACT-Lite & 1.0012 & 1.2514 & 2.1177 & 1.4070\\
+Quality-Input & 1.0015 & 1.1328 & 2.0711 & 1.6831\\
+Weighted-Loss & 1.0018 & 1.2465 & 1.0089 & 1.1215\\
+Quality-Full & 1.0022 & 1.1360 & 1.0002 & 1.0970\\
+Shuffled & 1.0091 & 1.2636 & 2.1074 & 1.3787\\
+Constant & 0.9999 & 1.1959 & 2.0747 & 1.3916\\
+\bottomrule\end{tabular}\caption{时间集成的平均 MSE 比值，衡量相对干净训练的退化程度。集成前后的实际误差变化见配对比较。}\end{table}
+\clearpage\subsection{退化比下降与实际误差的区别}
+
+\begingroup\small\renewcommand{\arraystretch}{1.08}\setlength{\intextsep}{8pt}
+下表逐运行计算 100×(集成后 MSE / 未集成 MSE − 1)，再对 3 数据集 × 3 seeds 取平均。负数表示 MSE 降低，正数表示 MSE 增加；不跨机器人直接平均原始 MSE。
+\begin{table}[H]\centering\small\begin{tabularx}{\linewidth}{Yrrrrr}\toprule
+模型 & Clean & Image & State & Action & Mixed\\\midrule
+ACT-Lite & +27.37\% & +27.72\% & +15.23\% & +11.47\% & +16.74\%\\
+Quality-Input & +27.65\% & +28.58\% & +17.27\% & +11.29\% & +8.59\%\\
+Weighted-Loss & +27.32\% & +27.68\% & +15.87\% & +29.56\% & +22.52\%\\
+Quality-Full & +27.67\% & +28.46\% & +17.22\% & +31.16\% & +22.64\%\\
+Shuffled & +27.51\% & +28.10\% & +11.55\% & +10.29\% & +14.60\%\\
+Constant & +27.58\% & +28.29\% & +17.16\% & +11.10\% & +17.89\%\\
+\bottomrule\end{tabularx}\caption{实际 MSE 的平均配对变化百分比。每格 9 次运行；正数表示误差增加。}\end{table}
+下表在同一数据集、同一模型内对五个训练条件和三个 seeds 的 15 次运行取平均。MSE 差值 = 集成后均值 − 未集成均值；变化 (\%) = 100×(集成后均值 / 未集成均值 − 1)。此处的均值之比不同于上表逐运行百分比的均值。
+\begin{table}[H]\centering\small\begin{tabularx}{\linewidth}{lYrrrr}\toprule
+数据集 & 模型 & 未集成 MSE & 集成后 MSE & MSE 差值 & 变化\\\midrule
+XArm & ACT-Lite & 0.39085 & 0.39331 & +0.002467 & +0.63\%\\
+XArm & Quality-Input & 0.39089 & 0.39226 & +0.001367 & +0.35\%\\
+XArm & Weighted-Loss & 0.38469 & 0.38938 & +0.004692 & +1.22\%\\
+XArm & Quality-Full & 0.38362 & 0.38759 & +0.003975 & +1.04\%\\
+XArm & Shuffled & 0.39163 & 0.39363 & +0.001998 & +0.51\%\\
+XArm & Constant & 0.39087 & 0.39338 & +0.002507 & +0.64\%\\
+Koch & ACT-Lite & 11.986 & 16.958 & +4.972 & +41.48\%\\
+Koch & Quality-Input & 13.35 & 18.178 & +4.828 & +36.16\%\\
+Koch & Weighted-Loss & 8.224 & 12.919 & +4.695 & +57.08\%\\
+Koch & Quality-Full & 8.1593 & 12.941 & +4.781 & +58.60\%\\
+Koch & Shuffled & 12.532 & 17.4 & +4.867 & +38.84\%\\
+Koch & Constant & 11.936 & 16.915 & +4.978 & +41.71\%\\
+ALOHA & ACT-Lite & 0.0004896 & 0.00053513 & +4.553e-05 & +9.30\%\\
+ALOHA & Quality-Input & 0.00050224 & 0.00054808 & +4.584e-05 & +9.13\%\\
+ALOHA & Weighted-Loss & 0.00033546 & 0.00037695 & +4.149e-05 & +12.37\%\\
+ALOHA & Quality-Full & 0.00031741 & 0.00036239 & +4.498e-05 & +14.17\%\\
+ALOHA & Shuffled & 0.00050376 & 0.00054189 & +3.813e-05 & +7.57\%\\
+ALOHA & Constant & 0.00048196 & 0.00053488 & +5.292e-05 & +10.98\%\\
+\bottomrule\end{tabularx}\caption{同一数据集内的实际 MSE 对照。每行平均五条件、三 seeds，共 15 次运行。}\end{table}
+270 组逐运行 MSE 相对变化的平均值为 +21.20\%。相对退化曲线下降不等于实际 MSE 下降：时间集成也会改变作为分母的干净训练基线。判断是否更准确，应同时查看未集成与集成后的实际 MSE。结果仅限离线动作预测。
+\noindent 完整条件对照见 HTML 可展开表格及 \path{temporal_ensemble/mse_by_dataset_model_condition.csv}。
+\par\noindent 复现：\code{python tools/evaluate\_temporal\_study.py --device cuda --decay 0.7 --report-only}。
+\par\endgroup
+% temporal-ensemble:end
+\clearpage\section{联合结论、局限与后续验证}
+\textbf{标签质量加权是受损示范学习的主要收益来源。}动作标签损坏时 Q-Full 的训练退化比为 0.977，而 ACT-Lite 为 2.432；综合损坏时为 1.144 与 1.535。Shuffled/Constant 对照支持逐样本质量对齐的重要性。Q-Full 的综合损坏平均退化比最低，但相对 Q-Weighted 的额外优势较小。
+
+\textbf{状态质量与测试鲁棒性必须分别检验。}质量输入能部分缓解训练状态损坏，却不能恢复缺失信息；测试状态损坏仍可明显放大误差。综合损坏训练下，Q-Full 的 ALOHA 状态测试配对 MSE 高约 36.1\%，而 Koch/xArm 仅有小幅优势。隐去正确质量信息会使该 Q-Full 的状态测试误差分别增加约 50.7\%、38.9\%、9.9\%，说明信息有用不等于模型必然胜出。
+
+\textbf{视觉与时间集成结论有明确边界。}当前 64 像素、所选故障与离线 MSE 对图像损坏的敏感性有限；这不是视觉故障没有闭环风险的证明。固定 decay=0.7 的时间集成使 270 个逐运行 MSE 变化平均为 $+21.20\%$，没有显示总体实际误差收益；尚未在受损测试观测上评估集成。
+
+只有三个任务与三个训练种子；质量分数是已知合成故障的启发式映射，不是校准概率或理论性能上界。未评估自动质量估计、真实在线延迟、动作执行反馈与闭环安全，也未按新训练协议重训。
+
+\note{后续验证：先通过 ALOHA 机制消融区分质量输入、标签加权与故障训练分布；利用 provenance 学习 image/state/action-label 质量估计器并检查校准，再用预测质量替换 Oracle；提高视觉分辨率、故障强度与持续时间；在仿真或实机检验成功率、安全失败和恢复行为；若闭环趋势成立，再扩大 seeds、任务与强度并给出配对置信区间或显著性检验。}
+\clearpage\section{审计与可复现性}
+270 个干净基线全部通过历史目标值、预测值和 MSE 核对，最大逐帧预测绝对差异为 0。所有测试动作标签、时间戳、episode 顺序和训练归一化均固定。运行清单记录 checkpoint 哈希、代码哈希、测试张量哈希、测试划分及损坏配置，输出文件使用 SHA-256 校验。
+
+\begin{center}
+\small
+\begin{tabular}{lp{102mm}}
+\toprule
+执行环境 & 记录值 \\
+\midrule
+Python & 3.13.13 \\
+PyTorch & 2.14.0+cu130 \\
+NumPy & 2.5.2 \\
+GPU & NVIDIA GeForce RTX 5060 Laptop GPU \\
+批量评估耗时 & 21.07 min \\
+\bottomrule
+\end{tabular}
+\end{center}
+耗时仅表示本机离线批量流程，不是实时控制延迟。新增软件界面支持干净/受损配对评估、摄像头选择、随机种子、Oracle/Unknown 切换、后台执行与取消，以及带配置的 HTML/JSON 导出。实现验证记录为 120 项测试通过。
+
+\begin{tcolorbox}[colback=panel,colframe=rule]\small\ttfamily
+python tools/evaluate\_test\_corruption\_study.py --device cuda\\
+python tools/evaluate\_test\_corruption\_study.py --report-only\\
+python tools/build\_test\_corruption\_latex\_report.py
+\end{tcolorbox}
+
+训练侧完整性审计为 270/270：保留各 checkpoint、预测 CSV、逐 episode 指标与 manifest，schema、signature、metadata 均匹配，没有缺失或重复组合，每个数据集只有一套归一化。训练函数墙钟累计 5.40 小时，包含循环内验证和 checkpoint，不含下载、四相机解码、最终评估与报告生成；旧实验目录未用于恢复或汇总。该训练耗时与表中的测试批量耗时不是同一种测量。
+
+\clearpage\subsection{产物索引与来源记录}
+\begingroup\raggedright
+\noindent\begin{tabularx}{\linewidth}{p{42mm}Y}
+\toprule
+内容 & 路径\\
+\midrule
+实验定义与总览 & \path{runs/mixed_modality_damage_v1_3_0/study.json}\\
+结构化汇总 & \path{runs/mixed_modality_damage_v1_3_0/results.csv}\\
+完整 JSON 证据 & \path{runs/mixed_modality_damage_v1_3_0/results.json}\\
+交互式 HTML 报告 & \path{runs/mixed_modality_damage_v1_3_0/report.html}\\
+单次运行记录 & \path{runs/mixed_modality_damage_v1_3_0/<dataset>/<model>/<condition>/seed-*/}\\
+\bottomrule
+\end{tabularx}
+
+
+\begin{center}
+\small\color{muted}
+本报告由 Sync2Act 实验 schema v3、quality schema v2 的实测输出生成。\\
+训练版本：Sync2Act v1.2.0；Git commit \code{a5b4fbbe1e7cb8c9704c3dbfc19a1ba563662068}。\\
+时间集成评估的代码指纹、环境与协议见 \code{temporal\_ensemble/summary.json}。
+\end{center}
+上述路径对应训练与干净测试。受损测试目录为 \path{runs/test_time_corruption_v1/}，保留 \code{results.csv}、\code{aggregate.csv}、\path{per_training_seed.csv}、\path{quality_vs_act.csv}、\path{metadata_comparison.csv}、\code{summary.json} 以及逐运行故障清单、预测与 episode 指标。逐运行指标、两级汇总及模型/元数据配对结果分别保存；受损与未受损片段的误差也在原始输出中。
+
+时间集成目录 \path{runs/mixed_modality_damage_v1_3_0/temporal_ensemble/} 保存配对预测、完整动作块、代码指纹、环境与配置。\path{relative_mse_by_model_condition.csv} 支持总体曲线，\path{mse_by_dataset_model_condition.csv} 支持完整条件对照，\path{mse_per_run.csv} 保存逐运行误差。
+
+本文基于日期为 2026-10-02 的 v1\_3\_0 报告及 2026-10-07 的完整测试评估，统一重写研究叙述。源码包保留原始中英文来源和 SHA-256，可核对所有历史结果；当前图表与表格均内嵌于 LaTeX，无外部图片依赖。报告版本 v1\_4\_0 不代表发布了同版本软件安装包。
+
+\begin{tcolorbox}[colback=panel,colframe=rule]\small\ttfamily
+python tools/build\_test\_corruption\_latex\_report.py\\
+使用 XeLaTeX 分别编译两份源码两次。
+\end{tcolorbox}
+\endgroup
+\appendix
+\clearpage\section{完整中等强度测试矩阵：ALOHA}
+六组模型、五种训练条件的 Oracle 测试。各单元格为 $\bar R\pm s_{\mathrm{train}}$，每格由 3 个训练种子和 3 个损坏种子组成。C/I/S/A/M 的含义见第 2 节。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{llrrr}
+\toprule
+模型 & 训练 & 图像 & 状态 & 混合 \\
+\midrule
+ACT-Lite & C & $1.158\pm0.005$ & $26.397\pm1.934$ & $26.355\pm1.929$ \\
+ACT-Lite & I & $1.002\pm0.008$ & $26.536\pm0.203$ & $26.343\pm0.206$ \\
+ACT-Lite & S & $5.346\pm6.131$ & $5.113\pm2.128$ & $8.766\pm4.539$ \\
+ACT-Lite & A & $1.037\pm0.024$ & $9.483\pm2.788$ & $9.445\pm2.801$ \\
+ACT-Lite & M & $1.002\pm0.009$ & $7.937\pm0.385$ & $7.860\pm0.399$ \\
+Q-Input & C & $1.179\pm0.123$ & $53.849\pm6.562$ & $46.548\pm5.502$ \\
+Q-Input & I & $1.005\pm0.010$ & $57.375\pm10.407$ & $49.362\pm8.759$ \\
+Q-Input & S & $3.413\pm2.319$ & $9.632\pm5.288$ & $11.759\pm3.915$ \\
+Q-Input & A & $0.941\pm0.023$ & $17.537\pm3.245$ & $15.105\pm2.706$ \\
+Q-Input & M & $0.870\pm0.050$ & $7.616\pm1.867$ & $7.446\pm1.841$ \\
+Q-Weighted & C & $1.158\pm0.004$ & $26.382\pm1.957$ & $26.341\pm1.954$ \\
+Q-Weighted & I & $1.002\pm0.008$ & $26.541\pm0.301$ & $26.348\pm0.305$ \\
+Q-Weighted & S & $5.492\pm6.398$ & $5.217\pm2.207$ & $8.972\pm4.585$ \\
+Q-Weighted & A & $1.129\pm0.034$ & $27.361\pm0.586$ & $27.263\pm0.611$ \\
+Q-Weighted & M & $1.007\pm0.015$ & $10.458\pm0.735$ & $10.373\pm0.732$ \\
+Q-Full & C & $1.178\pm0.124$ & $53.832\pm6.362$ & $46.527\pm5.331$ \\
+Q-Full & I & $1.005\pm0.010$ & $57.504\pm10.485$ & $49.480\pm8.836$ \\
+Q-Full & S & $3.480\pm2.270$ & $9.667\pm5.255$ & $11.884\pm3.682$ \\
+Q-Full & A & $1.128\pm0.095$ & $57.055\pm7.896$ & $49.307\pm6.671$ \\
+Q-Full & M & $0.994\pm0.019$ & $15.162\pm5.258$ & $15.031\pm5.219$ \\
+Q-Shuffled & C & $1.177\pm0.124$ & $53.371\pm6.068$ & $46.133\pm5.080$ \\
+Q-Shuffled & I & $1.002\pm0.002$ & $55.037\pm8.484$ & $47.410\pm7.125$ \\
+Q-Shuffled & S & $6.930\pm2.513$ & $4.549\pm2.489$ & $9.655\pm1.835$ \\
+Q-Shuffled & A & $0.944\pm0.034$ & $16.985\pm3.937$ & $14.626\pm3.287$ \\
+Q-Shuffled & M & $0.996\pm0.014$ & $11.230\pm3.614$ & $11.131\pm3.608$ \\
+Q-Constant & C & $1.179\pm0.124$ & $53.784\pm6.396$ & $46.485\pm5.367$ \\
+Q-Constant & I & $1.093\pm0.053$ & $55.106\pm6.950$ & $47.575\pm5.825$ \\
+Q-Constant & S & $2.915\pm1.667$ & $30.170\pm5.923$ & $27.524\pm3.861$ \\
+Q-Constant & A & $0.943\pm0.024$ & $17.488\pm3.198$ & $15.063\pm2.668$ \\
+Q-Constant & M & $1.138\pm0.185$ & $31.582\pm1.305$ & $27.164\pm0.930$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{接近 1 的比值不等于绝对 MSE 很小，也不证明闭环任务能够成功。所有比较均保留各自的干净测试分母；原始动作尺度和绝对误差请参照 CSV 数据。}
+\clearpage\section{完整中等强度测试矩阵：Koch}
+六组模型、五种训练条件的 Oracle 测试。各单元格为 $\bar R\pm s_{\mathrm{train}}$，每格由 3 个训练种子和 3 个损坏种子组成。C/I/S/A/M 的含义见第 2 节。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{llrrr}
+\toprule
+模型 & 训练 & 图像 & 状态 & 混合 \\
+\midrule
+ACT-Lite & C & $1.054\pm0.039$ & $28.149\pm2.135$ & $27.914\pm2.071$ \\
+ACT-Lite & I & $1.003\pm0.003$ & $27.927\pm2.396$ & $27.635\pm2.391$ \\
+ACT-Lite & S & $4.779\pm5.967$ & $13.718\pm1.571$ & $17.625\pm4.913$ \\
+ACT-Lite & A & $1.037\pm0.036$ & $10.966\pm1.113$ & $10.882\pm1.067$ \\
+ACT-Lite & M & $0.987\pm0.003$ & $11.548\pm0.498$ & $11.393\pm0.478$ \\
+Q-Input & C & $1.069\pm0.072$ & $46.137\pm4.472$ & $39.760\pm3.280$ \\
+Q-Input & I & $1.006\pm0.009$ & $46.288\pm4.225$ & $39.760\pm3.021$ \\
+Q-Input & S & $1.019\pm0.017$ & $15.386\pm1.470$ & $15.248\pm1.462$ \\
+Q-Input & A & $1.032\pm0.058$ & $16.782\pm1.347$ & $14.509\pm1.118$ \\
+Q-Input & M & $0.778\pm0.030$ & $7.499\pm0.543$ & $7.293\pm0.534$ \\
+Q-Weighted & C & $1.055\pm0.041$ & $28.108\pm1.941$ & $27.873\pm1.877$ \\
+Q-Weighted & I & $1.003\pm0.003$ & $27.924\pm2.411$ & $27.632\pm2.406$ \\
+Q-Weighted & S & $3.931\pm4.339$ & $13.930\pm1.441$ & $16.961\pm3.403$ \\
+Q-Weighted & A & $1.051\pm0.020$ & $28.261\pm1.011$ & $28.004\pm1.022$ \\
+Q-Weighted & M & $1.002\pm0.001$ & $16.969\pm0.720$ & $16.781\pm0.699$ \\
+Q-Full & C & $1.069\pm0.073$ & $46.384\pm4.630$ & $39.968\pm3.418$ \\
+Q-Full & I & $1.007\pm0.009$ & $46.115\pm4.103$ & $39.620\pm2.931$ \\
+Q-Full & S & $1.019\pm0.017$ & $15.340\pm1.471$ & $15.204\pm1.463$ \\
+Q-Full & A & $1.056\pm0.066$ & $46.728\pm4.494$ & $40.315\pm3.239$ \\
+Q-Full & M & $1.004\pm0.008$ & $17.080\pm1.012$ & $16.921\pm1.021$ \\
+Q-Shuffled & C & $1.070\pm0.073$ & $46.450\pm4.563$ & $40.023\pm3.384$ \\
+Q-Shuffled & I & $1.000\pm0.007$ & $46.291\pm4.589$ & $39.772\pm3.370$ \\
+Q-Shuffled & S & $1.016\pm0.023$ & $12.686\pm0.673$ & $12.587\pm0.677$ \\
+Q-Shuffled & A & $1.032\pm0.060$ & $16.585\pm1.240$ & $14.350\pm1.039$ \\
+Q-Shuffled & M & $1.001\pm0.007$ & $11.005\pm0.470$ & $10.863\pm0.458$ \\
+Q-Constant & C & $1.069\pm0.072$ & $46.171\pm4.714$ & $39.790\pm3.480$ \\
+Q-Constant & I & $1.069\pm0.081$ & $46.098\pm3.875$ & $39.728\pm2.834$ \\
+Q-Constant & S & $1.050\pm0.082$ & $32.741\pm2.710$ & $28.310\pm1.916$ \\
+Q-Constant & A & $1.030\pm0.059$ & $16.763\pm1.501$ & $14.493\pm1.261$ \\
+Q-Constant & M & $1.024\pm0.087$ & $26.308\pm2.051$ & $22.666\pm1.476$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{接近 1 的比值不等于绝对 MSE 很小，也不证明闭环任务能够成功。所有比较均保留各自的干净测试分母；原始动作尺度和绝对误差请参照 CSV 数据。}
+\clearpage\section{完整中等强度测试矩阵：xArm}
+六组模型、五种训练条件的 Oracle 测试。各单元格为 $\bar R\pm s_{\mathrm{train}}$，每格由 3 个训练种子和 3 个损坏种子组成。C/I/S/A/M 的含义见第 2 节。
+
+\begin{center}
+\footnotesize
+\begin{tabular}{llrrr}
+\toprule
+模型 & 训练 & 图像 & 状态 & 混合 \\
+\midrule
+ACT-Lite & C & $1.000\pm0.000$ & $1.209\pm0.028$ & $1.191\pm0.027$ \\
+ACT-Lite & I & $1.000\pm0.001$ & $1.211\pm0.025$ & $1.193\pm0.024$ \\
+ACT-Lite & S & $1.009\pm0.009$ & $1.040\pm0.006$ & $1.043\pm0.005$ \\
+ACT-Lite & A & $1.000\pm0.000$ & $1.056\pm0.018$ & $1.049\pm0.017$ \\
+ACT-Lite & M & $1.000\pm0.001$ & $1.027\pm0.003$ & $1.024\pm0.003$ \\
+Q-Input & C & $1.000\pm0.000$ & $1.105\pm0.050$ & $1.090\pm0.041$ \\
+Q-Input & I & $1.000\pm0.002$ & $1.101\pm0.053$ & $1.087\pm0.042$ \\
+Q-Input & S & $1.000\pm0.001$ & $1.040\pm0.004$ & $1.036\pm0.004$ \\
+Q-Input & A & $1.000\pm0.000$ & $1.029\pm0.008$ & $1.025\pm0.007$ \\
+Q-Input & M & $0.984\pm0.016$ & $1.012\pm0.011$ & $1.000\pm0.020$ \\
+Q-Weighted & C & $1.000\pm0.000$ & $1.209\pm0.028$ & $1.191\pm0.027$ \\
+Q-Weighted & I & $1.000\pm0.001$ & $1.212\pm0.033$ & $1.194\pm0.031$ \\
+Q-Weighted & S & $1.009\pm0.009$ & $1.041\pm0.008$ & $1.044\pm0.005$ \\
+Q-Weighted & A & $1.000\pm0.000$ & $1.131\pm0.044$ & $1.119\pm0.042$ \\
+Q-Weighted & M & $1.000\pm0.001$ & $1.048\pm0.001$ & $1.042\pm0.001$ \\
+Q-Full & C & $1.000\pm0.000$ & $1.103\pm0.050$ & $1.089\pm0.041$ \\
+Q-Full & I & $1.000\pm0.002$ & $1.104\pm0.054$ & $1.090\pm0.044$ \\
+Q-Full & S & $1.001\pm0.001$ & $1.040\pm0.005$ & $1.036\pm0.005$ \\
+Q-Full & A & $1.000\pm0.001$ & $1.066\pm0.022$ & $1.056\pm0.018$ \\
+Q-Full & M & $0.997\pm0.002$ & $1.037\pm0.003$ & $1.030\pm0.002$ \\
+Q-Shuffled & C & $1.000\pm0.000$ & $1.104\pm0.050$ & $1.089\pm0.041$ \\
+Q-Shuffled & I & $1.000\pm0.000$ & $1.104\pm0.055$ & $1.090\pm0.046$ \\
+Q-Shuffled & S & $1.009\pm0.007$ & $1.040\pm0.004$ & $1.040\pm0.005$ \\
+Q-Shuffled & A & $1.000\pm0.000$ & $1.026\pm0.008$ & $1.023\pm0.007$ \\
+Q-Shuffled & M & $1.000\pm0.001$ & $1.024\pm0.002$ & $1.020\pm0.001$ \\
+Q-Constant & C & $1.000\pm0.000$ & $1.103\pm0.050$ & $1.089\pm0.041$ \\
+Q-Constant & I & $1.000\pm0.000$ & $1.103\pm0.048$ & $1.089\pm0.039$ \\
+Q-Constant & S & $1.003\pm0.003$ & $1.052\pm0.013$ & $1.047\pm0.014$ \\
+Q-Constant & A & $1.000\pm0.000$ & $1.027\pm0.007$ & $1.023\pm0.005$ \\
+Q-Constant & M & $0.998\pm0.003$ & $1.035\pm0.010$ & $1.027\pm0.009$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{接近 1 的比值不等于绝对 MSE 很小，也不证明闭环任务能够成功。所有比较均保留各自的干净测试分母；原始动作尺度和绝对误差请参照 CSV 数据。}
+\end{document}

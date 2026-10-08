@@ -18,6 +18,7 @@ def run_release_check(directory: str) -> int:
         # Set before the first CUDA operation; this process is only a diagnostic.
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         import av
+        import pandas as pd
         import pyarrow as pa
         import pyarrow.parquet as pq
         import torch
@@ -25,8 +26,12 @@ def run_release_check(directory: str) -> int:
 
         from sync2act import __version__
         from sync2act.config import resolve_training_config
+        from sync2act.data.dataset import NormalizationStats
+        from sync2act.data.episode import clone_episode
         from sync2act.data.synthetic import generate_demo_episodes
+        from sync2act.evaluation.test_corruption import evaluate_paired, preset_config
         from sync2act.gui import MainWindow
+        from sync2act.reporting.report import generate_report
         from sync2act.training import train_policy
         from sync2act.training.setup import build_training_policy
 
@@ -57,6 +62,11 @@ def run_release_check(directory: str) -> int:
         window.tabs.setCurrentIndex(3)
         app.processEvents()
         assert window.grab().save(str(target / "training.png"))
+        window.tabs.setCurrentIndex(4)
+        window.eval_condition.setCurrentIndex(window.eval_condition.findData("mixed"))
+        assert window._test_corruption_config().condition == "mixed"
+        app.processEvents()
+        assert window.grab().save(str(target / "evaluation.png"))
         window.close()
 
         episodes = generate_demo_episodes(num_episodes=3, length=7, image_size=8)
@@ -103,10 +113,49 @@ def run_release_check(directory: str) -> int:
             best = torch.load(resumed.evaluation_checkpoint, map_location="cpu", weights_only=False)
             assert best["checkpoint_kind"] == "best"
             assert best["selection_value"] == min(r["validation_loss"] for r in b["history"])
+            model = build_training_policy(config["model"], config["training"])
+            model.load_state_dict(best["model"])
+            stats = NormalizationStats.from_dict(best["stats"])
+            test_episodes = generate_demo_episodes(
+                num_episodes=2, length=64, image_size=8, seed=81
+            )
+            originals = [clone_episode(episode) for episode in test_episodes]
+            paired_checks = {}
+            for quality_mode in ("oracle", "unknown"):
+                pair_dir = target / device / quality_mode
+                pair = evaluate_paired(
+                    model, test_episodes, preset_config("mixed", quality_mode=quality_mode),
+                    stats=stats, output_dir=pair_dir, device=device, batch_size=16,
+                )
+                assert pair["test_manifest"]["affected_frames"] > 0
+                clean = pd.read_csv(pair_dir / "clean" / "predictions.csv")
+                damaged = pd.read_csv(pair_dir / "test" / "predictions.csv")
+                columns = ["episode", "step", *[c for c in clean if c.startswith("target_")]]
+                pd.testing.assert_frame_equal(clean[columns], damaged[columns])
+                predictions = [c for c in clean if c.startswith("prediction_")]
+                assert not clean[predictions].equals(damaged[predictions])
+                report = generate_report([
+                    {"name": condition, "metrics": pair[condition], "paired_evaluation": pair}
+                    for condition in ("clean", "test")
+                ], pair_dir / "report.html")
+                exported = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+                assert len(exported["runs"]) == 2
+                assert exported["runs"][1]["metrics"] == pair["test"]
+                paired_checks[quality_mode] = {
+                    "paired_evaluation": True, "targets_preserved": True,
+                    "predictions_changed": True, "html_json_export": True,
+                    "affected_frames": pair["test_manifest"]["affected_frames"],
+                }
+            for before, after in zip(originals, test_episodes, strict=True):
+                for key, value in before.items():
+                    if torch.is_tensor(value):
+                        assert torch.equal(value, after[key])
             result["devices"][device] = {
                 "exact_resume": True,
                 "best_selection": True,
                 "steps": b["step"],
+                "test_corruption": paired_checks,
+                "source_episodes_unchanged": True,
             }
         result["passed"] = True
     except Exception:

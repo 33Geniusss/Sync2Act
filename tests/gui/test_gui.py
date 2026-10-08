@@ -22,6 +22,122 @@ from sync2act.data.synthetic import generate_demo_episodes  # noqa: E402
 from sync2act.gui import MainWindow  # noqa: E402
 
 
+def test_test_corruption_controls_and_background_pair(qtbot, tmp_path, monkeypatch):
+    import torch
+
+    from sync2act.data.dataset import compute_stats
+
+    class StatePolicy(torch.nn.Module):
+        horizon = 1
+
+        def forward(self, state, **kwargs):
+            return state[:, :3].unsqueeze(1)
+
+    monkeypatch.chdir(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.original_episodes = generate_demo_episodes(num_episodes=6, length=32, image_size=8)
+    window.episodes = list(window.original_episodes)
+    window._rebuild_episode_partitions()
+    window.current_model = StatePolicy()
+    window.current_stats = compute_stats(window.training_episodes)
+    window.device_combo.setCurrentText("cpu")
+    window.eval_condition.setCurrentIndex(window.eval_condition.findData("mixed"))
+    assert window.eval_delay_fraction.value() == 0.6
+    assert window.eval_missing_fraction.value() == 0.2
+    window.eval_quality.setCurrentIndex(window.eval_quality.findData("unknown"))
+    window.eval_seed.setValue(117)
+    config = window._test_corruption_config()
+    assert config.quality_mode == "unknown" and config.seed == 117
+    originals = [clone_episode(e) for e in window.original_episodes]
+    window.evaluate_latest()
+    assert window._evaluation_busy()
+    assert not window.start_button.isEnabled()
+    assert window.cancel_eval_button.isEnabled()
+    qtbot.waitUntil(lambda: not window._evaluation_busy(), timeout=30000)
+    qtbot.waitUntil(lambda: bool(window.last_evaluations), timeout=5000)
+    result = window.last_evaluations[0]
+    assert result["test_config"]["condition"] == "mixed"
+    assert result["provenance"]["test_episode_indices"] == window.episode_split["test"]
+    assert window.metrics_table.columnCount() == 3
+    assert len(window.compare_plot.listDataItems()) == 3
+    assert Path(result["output_dir"], "comparison.json").is_file()
+    for before, after in zip(originals, window.original_episodes, strict=True):
+        assert torch.equal(before["action"], after["action"])
+        assert torch.equal(before["observation.state"], after["observation.state"])
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    report = tmp_path / "comparison.html"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(report), "HTML (*.html)"))
+    window.export_report()
+    exported = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+    assert len(exported["runs"]) == 2
+    assert exported["runs"][0]["metrics"] == result["clean"]
+    assert exported["runs"][1]["metrics"] == result["test"]
+    assert exported["runs"][1]["paired_evaluation"]["normalization"] == window.current_stats.to_dict()
+    window.close()
+
+
+def test_evaluation_worker_cancelled_before_start(qtbot, tmp_path):
+    from sync2act.evaluation.test_corruption import TestCorruptionConfig
+    from sync2act.gui.worker import EvaluationWorker
+
+    worker = EvaluationWorker([{}], TestCorruptionConfig(), tmp_path)
+    cancelled, finished = [], []
+    worker.cancelled.connect(lambda: cancelled.append(True))
+    worker.finished.connect(finished.append)
+    worker.stop_event.set()
+    worker.run()
+    assert cancelled == [True] and not finished
+
+
+def test_checkpoint_dataset_identity_and_background_reload_preserve_saved_order(qtbot, tmp_path, monkeypatch):
+    import torch
+
+    from sync2act.data.dataset import compute_stats
+    from sync2act.evaluation.test_corruption import TestCorruptionConfig
+    from sync2act.gui.worker import EvaluationWorker
+    from sync2act.policies import BCMLP
+
+    data = generate_demo_episodes(num_episodes=6, length=12, image_size=8)
+    stats = compute_stats(data[:3])
+    metadata = {"root": str(tmp_path / "dataset"), "max_image_size": 8, "source_episodes": 6,
+                "state_dim": 6, "action_dim": 3, "image_keys": ["observation.image"]}
+    checkpoint = tmp_path / "model.pt"
+    torch.save({"config": {"dataset_config": metadata}}, checkpoint)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.dataset_metadata = {**metadata, "max_image_size": 16}
+    model = BCMLP(6, 3)
+    job = window._evaluation_job(model, stats, [data[5], data[3]], checkpoint, [5, 3])
+    assert job["reload_spec"] == metadata
+    calls = []
+
+    def load(root, **kwargs):
+        calls.append((root, kwargs))
+        return [data[3], data[5]], metadata
+
+    monkeypatch.setattr("sync2act.gui.worker.load_local_lerobot_dataset", load)
+    worker = EvaluationWorker([job], TestCorruptionConfig(), tmp_path / "evaluation")
+    results, errors = [], []
+    worker.finished.connect(results.extend)
+    worker.failed.connect(errors.append)
+    worker.run()
+    assert not errors
+    assert calls[0][1]["max_image_size"] == 8
+    assert calls[0][1]["episode_positions"] == [5, 3]
+    import pandas as pd
+
+    frame = pd.read_csv(Path(results[0]["output_dir"]) / "test/predictions.csv")
+    np.testing.assert_allclose(frame[frame.episode == 0]["target_0"], data[5]["action"][:, 0], atol=1e-6)
+    window.dataset_metadata["root"] = str(tmp_path / "different-dataset")
+    with pytest.raises(ValueError, match="original dataset"):
+        window._evaluation_job(model, stats, [data[5]], checkpoint, [5])
+    window.close()
+
+
 def test_main_window_starts_without_demo_data(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

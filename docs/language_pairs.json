@@ -1,4 +1,6 @@
 {
   "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.tex": "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.tex",
-  "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.pdf": "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.pdf"
+  "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0.pdf": "output/pdf/sync2act_mixed_modality_damage_report_v1_3_0_en.pdf",
+  "output/pdf/sync2act_test_time_corruption_report_v1_4_0.tex": "output/pdf/sync2act_test_time_corruption_report_v1_4_0_en.tex",
+  "output/pdf/sync2act_test_time_corruption_report_v1_4_0.pdf": "output/pdf/sync2act_test_time_corruption_report_v1_4_0_en.pdf"
 }

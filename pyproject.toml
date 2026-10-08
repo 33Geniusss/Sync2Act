@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sync2act"
-version = "1.3.0"
+version = "1.4.0"
 description = "Study how robot demonstration data quality affects imitation learning."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -24,7 +24,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "ruff>=0.9,<1"]
+dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "ruff>=0.9,<1", "matplotlib>=3.9,<4"]
+study = ["matplotlib>=3.9,<4"]
 lerobot = ["lerobot>=0.4,<1"]
 
 [project.scripts]
