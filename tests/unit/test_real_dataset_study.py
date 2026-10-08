@@ -55,7 +55,7 @@ def test_requested_mixed_damage_condition_weights_and_missing_semantics():
     for name, weights in expected.items():
         components = conditions[name]["components"]
         assert {item["name"]: item["weight"] for item in components} == weights
-        assert sum(item["weight"] for item in components) == 1.0
+        assert sum(item["weight"] for item in components) == pytest.approx(1.0, abs=1e-12)
         for item in components:
             if item["name"].endswith("_missing"):
                 assert item["config"] == {
